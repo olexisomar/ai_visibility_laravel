@@ -1,0 +1,552 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Services\LLMService;
+use App\Services\SerpAPIService;
+use App\Services\GSCService;
+use App\Services\BrandTokenService;
+use App\Services\QueryNormalizationService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+class TopicController extends Controller
+{
+    private LLMService $llm;
+    private SerpAPIService $serpapi;
+    private GSCService $gsc;
+    private BrandTokenService $brandTokens;
+    private QueryNormalizationService $normalizer;
+
+    public function __construct(
+        LLMService $llm,
+        SerpAPIService $serpapi,
+        GSCService $gsc,
+        BrandTokenService $brandTokens,
+        QueryNormalizationService $normalizer
+    ) {
+        $this->llm = $llm;
+        $this->serpapi = $serpapi;
+        $this->gsc = $gsc;
+        $this->brandTokens = $brandTokens;
+        $this->normalizer = $normalizer;
+    }
+
+    public function index(Request $request)
+    {
+        $topics = DB::table('topics')
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        return response()->json(['rows' => $topics]);
+    }
+    
+    public function store(Request $request)
+    {
+        set_time_limit(600);
+        
+        $topic = $request->input('topic');
+        $personaStart = max(0, (int)$request->input('persona_start', 0));
+        $personaLimit = max(1, min((int)$request->input('persona_limit', 4), 10));
+        
+        if (!$topic) {
+            return response()->json(['error' => 'Topic required'], 400);
+        }
+
+        // Set deadline for this request
+        $budget = (int)env('ADMIN_TIME_BUDGET_SEC', 90);
+        if (!defined('SAVE_TOPICS_DEADLINE')) {
+            define('SAVE_TOPICS_DEADLINE', microtime(true) + $budget);
+        }
+
+        try {
+            // Get all active personas
+            $personas = DB::table('personas')
+                ->where('is_active', 1)
+                ->where('is_deleted', 0)
+                ->get()
+                ->toArray();
+
+            if (empty($personas)) {
+                return response()->json([
+                    'error' => 'No personas found. Create at least one persona in Config → Personas.'
+                ], 400);
+            }
+
+            $totalPersonas = count($personas);
+
+            // Upsert topic
+            DB::table('topics')->updateOrInsert(
+                ['name' => $topic],
+                ['is_active' => 1, 'created_at' => now(), 'updated_at' => now()]
+            );
+
+            $topicRow = DB::table('topics')->where('name', $topic)->first();
+            if (!$topicRow) {
+                return response()->json(['error' => 'Failed to create topic'], 500);
+            }
+
+            // Check cooldown (10 minutes)
+            $shouldGenerate = true;
+            if ($topicRow->last_generated_at) {
+                $minutes = DB::selectOne(
+                    "SELECT TIMESTAMPDIFF(MINUTE, ?, NOW()) as mins",
+                    [$topicRow->last_generated_at]
+                )->mins;
+                
+                $shouldGenerate = $minutes >= 10;
+            }
+
+            if (!$shouldGenerate) {
+                return response()->json([
+                    'ok' => true,
+                    'topic' => $topic,
+                    'processed_personas' => 0,
+                    'generated' => 0,
+                    'next_persona' => $personaStart,
+                    'done' => false,
+                    'message' => 'Topic generation on cooldown (10 min minimum)',
+                ]);
+            }
+
+            // Process batch of personas
+            $result = $this->processTopicPersonas(
+                $topic,
+                $topicRow->id,
+                $personas,
+                $personaStart,
+                $personaLimit
+            );
+
+            $nextPersona = $personaStart + $result['processed'];
+            $done = $nextPersona >= $totalPersonas;
+
+            // If we processed all personas, update last_generated_at
+            if ($done) {
+                DB::table('topics')
+                    ->where('id', $topicRow->id)
+                    ->update(['last_generated_at' => now()]);
+            }
+
+            return response()->json([
+                'ok' => true,
+                'topic' => $topic,
+                'processed_personas' => $result['processed'],
+                'generated' => $result['generated'],
+                'next_persona' => $nextPersona,
+                'done' => $done,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Topic generation error: ' . $e->getMessage());
+            Log::error($e->getTraceAsString());
+            
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Process a batch of personas for a topic
+     */
+    private function processTopicPersonas(
+        string $topic,
+        int $topicId,
+        array $personas,
+        int $startIdx,
+        int $limit
+    ): array {
+        $hl = env('SERPAPI_HL', 'en');
+        $gl = env('SERPAPI_GL', 'us');
+        
+        // Get GSC weights for scoring
+        $primaryProperty = $this->gsc->getPrimaryProperty();
+        $weights = $this->gsc->getWeights($primaryProperty);
+
+        // Get LLM providers
+        $providers = $this->llm->getProviders();
+
+        // Env configs
+        $maxAITotal = (int)env('MAX_AI_TOTAL', 2);
+        $maxAIPerProvider = (int)env('MAX_AI_PER_PROVIDER', 1);
+        $paaPerSeed = (int)env('PAA_PER_SEED', 1);
+        $minBrandedQueries = (int)env('MIN_BRANDED_Q', 1);
+
+        $processed = 0;
+        $generated = 0;
+
+        $endIdx = min(count($personas), $startIdx + $limit);
+
+        for ($i = $startIdx; $i < $endIdx; $i++) {
+            if (microtime(true) > SAVE_TOPICS_DEADLINE - 2) {
+                Log::info("[Topics] Budget low, stopping at persona index $i");
+                break;
+            }
+
+            $persona = (array)$personas[$i];
+            $processed++;
+
+            // Get brand tokens
+            $brandId = !empty($persona['brand_id']) ? (string)$persona['brand_id'] : null;
+            $tokens = $this->brandTokens->getBrandTokens($brandId);
+
+            // Generate queries from all providers
+            $allResults = [];
+            foreach ($providers as $provider) {
+                try {
+                    $result = $this->llm->generateQueries(
+                        $provider,
+                        $topic,
+                        $persona,
+                        $tokens,
+                        $hl,
+                        $gl
+                    );
+
+                    $allResults[] = [
+                        'provider' => $provider,
+                        'generic' => $result['generic'],
+                        'branded' => $result['branded'],
+                    ];
+                } catch (\Exception $e) {
+                    Log::warning("Provider {$provider['provider']} failed: " . $e->getMessage());
+                    continue;
+                }
+            }
+
+            if (empty($allResults)) {
+                continue;
+            }
+
+            // Rank and select top queries
+            $seeds = $this->rankAndSelectQueries(
+                $allResults,
+                $tokens,
+                $weights,
+                $maxAITotal,
+                $maxAIPerProvider,
+                $minBrandedQueries
+            );
+
+            if (empty($seeds)) {
+                continue;
+            }
+
+            // Insert seeds into raw_suggestions
+            $rank = 1;
+            foreach ($seeds as $seed) {
+                $inserted = $this->insertSuggestion(
+                    $seed['q'],
+                    $topic,
+                    $persona['id'],
+                    $seed['prov'],
+                    $seed['b'],
+                    $hl,
+                    $gl,
+                    $rank,
+                    $seed['w']
+                );
+
+                if ($inserted) {
+                    $generated++;
+                }
+                $rank++;
+            }
+
+            // PAA enrichment
+            if ($paaPerSeed > 0 && microtime(true) < SAVE_TOPICS_DEADLINE) {
+                $paaGenerated = $this->enrichWithPAA(
+                    $seeds,
+                    $tokens,
+                    $topic,
+                    $persona['id'],
+                    $hl,
+                    $gl,
+                    $paaPerSeed
+                );
+                $generated += $paaGenerated;
+            }
+        }
+
+        return [
+            'processed' => $processed,
+            'generated' => $generated,
+        ];
+    }
+
+    /**
+     * Rank queries and select best ones per provider
+     */
+    private function rankAndSelectQueries(
+        array $allResults,
+        array $tokens,
+        array $weights,
+        int $maxAITotal,
+        int $maxAIPerProvider,
+        int $minBrandedQueries
+    ): array {
+        $hasBrand = !empty($tokens['brand']);
+        
+        // Rank queries by weight within each provider
+        $perProviderSeeds = [];
+        foreach ($allResults as $bundle) {
+            $ranked = [];
+            
+            foreach ($bundle['generic'] as $q) {
+                $ranked[] = [
+                    'q' => $q,
+                    'b' => 0,
+                    'w' => $weights ? $this->gsc->scoreQuery($q, $weights) : 0,
+                    'prov' => $bundle['provider'],
+                ];
+            }
+            
+            foreach ($bundle['branded'] as $q) {
+                $ranked[] = [
+                    'q' => $q,
+                    'b' => 1,
+                    'w' => ($weights ? $this->gsc->scoreQuery($q, $weights) : 0) + 150, // boost branded
+                    'prov' => $bundle['provider'],
+                ];
+            }
+
+            // Sort by weight descending
+            usort($ranked, fn($a, $b) => $b['w'] <=> $a['w']);
+
+            // Apply quotas
+            if ($hasBrand) {
+                $branded = array_filter($ranked, fn($r) => $r['b'] === 1);
+                $generic = array_filter($ranked, fn($r) => $r['b'] === 0);
+                
+                $takeBranded = array_slice($branded, 0, max($minBrandedQueries, (int)floor($maxAIPerProvider * 0.4)));
+                $takeGeneric = array_slice($generic, 0, $maxAIPerProvider);
+                
+                $ranked = array_merge($takeBranded, $takeGeneric);
+                usort($ranked, fn($a, $b) => $b['w'] <=> $a['w']);
+                $ranked = array_slice($ranked, 0, $maxAIPerProvider);
+            } else {
+                $ranked = array_slice($ranked, 0, $maxAIPerProvider);
+            }
+
+            $perProviderSeeds[] = $ranked;
+        }
+
+        // Even distribution across providers
+        $providerCount = count($perProviderSeeds);
+        if ($providerCount === 0) {
+            return [];
+        }
+
+        $baseQuota = (int)floor($maxAITotal / $providerCount);
+        $remainder = $maxAITotal - ($baseQuota * $providerCount);
+
+        // Build queues per provider
+        $queues = [];
+        foreach ($perProviderSeeds as $list) {
+            if (empty($list)) continue;
+            
+            $provName = strtolower($list[0]['prov']['provider']);
+            if (!isset($queues[$provName])) {
+                $queues[$provName] = [];
+            }
+            foreach ($list as $item) {
+                $queues[$provName][] = $item;
+            }
+        }
+
+        // Pre-select branded queries if brand exists
+        $preSeeds = [];
+        if ($hasBrand) {
+            foreach (array_keys($queues) as $provName) {
+                foreach ($queues[$provName] as $idx => $item) {
+                    if (!empty($item['b'])) {
+                        $preSeeds[] = $item;
+                        array_splice($queues[$provName], $idx, 1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Select remaining queries with de-duplication
+        $selected = [];
+        $normSeen = [];
+        
+        foreach (array_keys($queues) as $i => $provName) {
+            $quota = $baseQuota + ($i < $remainder ? 1 : 0);
+            $picked = 0;
+            
+            while ($picked < $quota && !empty($queues[$provName])) {
+                $item = array_shift($queues[$provName]);
+                $normalized = $this->normalizer->normalize($item['q']);
+                
+                if (!isset($normSeen[$normalized])) {
+                    $normSeen[$normalized] = true;
+                    $selected[] = $item;
+                    $picked++;
+                }
+            }
+        }
+
+        $seeds = array_merge($preSeeds, $selected);
+        usort($seeds, fn($a, $b) => $b['w'] <=> $a['w']);
+
+        return $seeds;
+    }
+
+    /**
+     * Insert suggestion into raw_suggestions table
+     */
+    private function insertSuggestion(
+        string $text,
+        string $topic,
+        int $personaId,
+        array $provider,
+        int $isBranded,
+        string $hl,
+        string $gl,
+        int $rank,
+        int $weight
+    ): bool {
+        [$normalized, $hash] = $this->normalizer->normalizeAndHash($text);
+
+        $providerName = strtolower($provider['provider']);
+        $sourceTag = ($providerName === 'openai') ? 'ai-gpt' : (($providerName === 'gemini') ? 'ai-gemini' : 'ai-unknown');
+        $source = $sourceTag . ($isBranded ? '-branded' : '');
+
+        $score = max(30, min(99, 60 + (int)log(1 + max(0, $weight))));
+        $confidence = 80;
+
+        try {
+            return DB::table('raw_suggestions')->insertOrIgnore([
+                'text' => $text,
+                'normalized' => $normalized,
+                'hash_norm' => $hash,
+                'source' => $source,
+                'lang' => $hl,
+                'geo' => $gl,
+                'seed_term' => $topic,
+                'rank' => $rank,
+                'score_auto' => $score,
+                'confidence' => $confidence,
+                'collected_at' => now(),
+                'category' => $topic,
+                'persona_id' => $personaId,
+                'is_branded' => $isBranded,
+                'topic_cluster' => $topic,
+                'status' => 'new',
+            ]) > 0;
+        } catch (\Exception $e) {
+            Log::warning("Failed to insert suggestion: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Enrich with SerpAPI People Also Ask
+     */
+    private function enrichWithPAA(
+        array $seeds,
+        array $tokens,
+        string $topic,
+        int $personaId,
+        string $hl,
+        string $gl,
+        int $paaPerSeed
+    ): int {
+        $generated = 0;
+        $hasBrand = !empty($tokens['brand']);
+
+        foreach ($seeds as $seed) {
+            if (microtime(true) > SAVE_TOPICS_DEADLINE) {
+                break;
+            }
+
+            $isBranded = !empty($seed['b']);
+            $paaQuestions = $this->serpapi->getPeopleAlsoAsk($seed['q'], $hl, $gl);
+
+            if (empty($paaQuestions)) {
+                continue;
+            }
+
+            $rankP = 1;
+            foreach ($paaQuestions as $question) {
+                // Filter based on brand requirements
+                if ($isBranded && $hasBrand) {
+                    if (!$this->brandTokens->hasToken($question, $tokens['brand']) ||
+                        $this->brandTokens->hasToken($question, $tokens['competitors'])) {
+                        continue;
+                    }
+                }
+
+                if (!$isBranded && $hasBrand) {
+                    if ($this->brandTokens->hasToken($question, $tokens['brand'])) {
+                        continue;
+                    }
+                }
+
+                [$normalized, $hash] = $this->normalizer->normalizeAndHash($question);
+                
+                $source = 'paa-serpapi' . ($isBranded ? '-branded' : '');
+
+                try {
+                    $inserted = DB::table('raw_suggestions')->insertOrIgnore([
+                        'text' => $question,
+                        'normalized' => $normalized,
+                        'hash_norm' => $hash,
+                        'source' => $source,
+                        'lang' => $hl,
+                        'geo' => $gl,
+                        'seed_term' => $seed['q'],
+                        'rank' => $rankP,
+                        'score_auto' => 55,
+                        'confidence' => 75,
+                        'collected_at' => now(),
+                        'category' => $topic,
+                        'persona_id' => $personaId,
+                        'is_branded' => $isBranded,
+                        'topic_cluster' => $topic,
+                        'status' => 'new',
+                    ]);
+
+                    if ($inserted > 0) {
+                        $generated++;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning("Failed to insert PAA suggestion: " . $e->getMessage());
+                }
+
+                $rankP++;
+                if ($rankP > $paaPerSeed) {
+                    break;
+                }
+            }
+        }
+
+        return $generated;
+    }
+    
+    public function setActive(Request $request)
+    {
+        $id = $request->input('id');
+        $active = $request->input('active', 1);
+        
+        DB::table('topics')
+            ->where('id', $id)
+            ->update(['is_active' => $active, 'updated_at' => now()]);
+        
+        return response()->json(['ok' => true]);
+    }
+    
+    public function touch(Request $request)
+    {
+        $id = $request->input('id');
+        
+        DB::table('topics')
+            ->where('id', $id)
+            ->update(['last_generated_at' => null, 'updated_at' => now()]);
+        
+        return response()->json(['ok' => true]);
+    }
+}
