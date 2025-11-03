@@ -16,6 +16,56 @@
     <button type="button" class="btn pill-ok alt" id="tabPerformance">Performance</button>
     <button type="button" class="btn pill-info alt" id="tabConfig">Config</button>
     <button type="button" class="btn pill-info alt" id="tabAutomation" >⚙️ Automation</button>
+    <!-- Notification Bell -->
+    <div style="position: fixed; top: 20px; right: 20px; z-index: 1000;">
+      <button id="notificationBell" class="btn pill-info" style="position: relative; padding: 10px 16px;">
+        🔔
+        <span id="notificationBadge" class="hidden" style="
+          position: absolute;
+          top: -5px;
+          right: -5px;
+          background: #ef4444;
+          color: white;
+          border-radius: 50%;
+          width: 20px;
+          height: 20px;
+          font-size: 11px;
+          font-weight: bold;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        ">0</span>
+      </button>
+    </div>
+
+    <!-- Notification Dropdown -->
+    <div id="notificationDropdown" class="hidden" style="
+      position: fixed;
+      top: 70px;
+      right: 20px;
+      width: 400px;
+      max-height: 500px;
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+      z-index: 999;
+      overflow: hidden;
+    ">
+      <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="margin: 0; font-size: 16px;">Notifications</h3>
+        <button id="markAllRead" class="btn alt" style="font-size: 12px; padding: 4px 12px;">
+          Mark all read
+        </button>
+      </div>
+      
+      <div id="notificationList" style="max-height: 400px; overflow-y: auto;">
+        <div style="padding: 40px; text-align: center; color: #9ca3af;">
+          <div style="font-size: 48px; margin-bottom: 12px;">🔔</div>
+          <div>No notifications yet</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- DASHBOARD -->
@@ -764,6 +814,7 @@
             <tr>
               <th>ID</th>
               <th>Name</th>
+              <th>Personas</th>
               <th>Active</th>
               <th>Last Gen</th>
               <th>Actions</th>
@@ -793,9 +844,9 @@
             <tr>
               <th>ID</th>
               <th>Name</th>
-              <th>Brand</th>
+              <th>Domain</th>
               <th>Active</th>
-              <th>Updated</th>
+              <th>Last Gen</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -987,14 +1038,26 @@
 
                                 <!-- Notifications -->
                                 <div class="form-group">
-                                    <label class="checkbox-label">
-                                        <input type="checkbox" id="autoNotifications" name="notifications_enabled">
-                                        <span>Enable Notifications</span>
-                                    </label>
-                                    <small>Show alerts when runs complete</small>
-                                </div>
-                            </div>
+                                  <label class="checkbox-label">
+                                      <input type="checkbox" id="autoNotifications" name="notifications_enabled">
+                                      <span>Enable Notifications</span>
+                                  </label>
+                                  <small>Show alerts when runs complete</small>
+                              </div>
 
+                              <!-- NEW: Notification Email -->
+                              <div class="form-group" id="emailField">
+                                  <label for="autoNotificationEmail">Notification Email</label>
+                                  <input 
+                                      type="email" 
+                                      id="autoNotificationEmail" 
+                                      name="notification_email" 
+                                      class="form-control" 
+                                      placeholder="your@email.com"
+                                  >
+                                  <small>Where to send run completion emails</small>
+                              </div>
+                            </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 Save Settings</button>
                                 <div id="autoSettingsFeedback" class="feedback-message"></div>
@@ -1093,6 +1156,7 @@
   <script src="{{ asset('assets/js/performance.js') }}"></script>
   <script src="{{ asset('assets/js/automation.js') }}"></script>
   <script src="{{ asset('assets/js/mentions.js') }}"></script>
+  <script src="{{ asset('assets/js/notifications.js') }}"></script> 
 </body>
 
 </html>

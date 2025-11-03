@@ -19,7 +19,18 @@ async function loadAutomationSettings() {
         document.getElementById('autoScheduleTime').value = data.settings.schedule_time;
         document.getElementById('autoDefaultSource').value = data.settings.default_source;
         document.getElementById('autoMaxRuns').value = data.settings.max_runs_per_day;
-        document.getElementById('autoNotifications').checked = data.settings.notifications_enabled;
+        document.getElementById('autoNotifications').checked = data.settings.notifications_enabled || false;
+        document.getElementById('autoNotificationEmail').value = data.settings.notification_email || '';
+
+        // Show/hide email field based on checkbox
+        document.getElementById('autoNotifications').addEventListener('change', (e) => {
+            const emailField = document.getElementById('emailField');
+            emailField.style.display = e.target.checked ? 'block' : 'none';
+        });
+
+        // Trigger on load
+        document.getElementById('emailField').style.display = 
+            data.settings.notifications_enabled ? 'block' : 'none';
         
         // Update status badge
         const statusBadge = document.getElementById('automationStatus');
@@ -48,14 +59,14 @@ async function loadAutomationSettings() {
 async function saveAutomationSettings(e) {
     e.preventDefault();
     
-    const formData = new FormData(e.target);
     const settings = {
-        schedule: formData.get('schedule'),
-        schedule_day: formData.get('schedule_day'),
-        schedule_time: formData.get('schedule_time'),
-        default_source: formData.get('default_source'),
-        max_runs_per_day: parseInt(formData.get('max_runs_per_day')),
-        notifications_enabled: formData.get('notifications_enabled') === 'on',
+        schedule: document.getElementById('autoSchedule').value,
+        schedule_day: document.getElementById('autoScheduleDay').value,
+        schedule_time: document.getElementById('autoScheduleTime').value,
+        default_source: document.getElementById('autoDefaultSource').value,
+        max_runs_per_day: parseInt(document.getElementById('autoMaxRuns').value) || 10,
+        notifications_enabled: document.getElementById('autoNotifications').checked,
+        notification_email: document.getElementById('autoNotificationEmail').value.trim() || null, // ADD THIS
     };
     
     try {

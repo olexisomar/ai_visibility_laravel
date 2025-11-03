@@ -64,6 +64,10 @@ class AIOService
             $rows = DB::table('prompts')
                 ->whereNull('deleted_at')
                 ->whereIn('status', ['approved', 'active'])
+                ->where(function($q) {
+                    $q->where('is_paused', 0)
+                    ->orWhereNull('is_paused');
+                })
                 ->orderBy('id')
                 ->limit($this->pageSize)
                 ->offset($offset)
@@ -128,7 +132,25 @@ class AIOService
                 'status' => 'completed',
                 'finished_at' => now(),
             ]);
-
+        
+        // Send notification
+        try {
+            $notificationService = app(\App\Services\NotificationService::class);
+            $notificationService->notifyRunCompleted($runId, [
+                'prompts_processed' => $processed,
+                'mentions_found' => DB::table('mentions')
+                    ->join('responses', 'mentions.response_id', '=', 'responses.id')
+                    ->where('responses.run_id', $runId)
+                    ->count(),
+                'brands_mentioned' => DB::table('mentions')
+                    ->join('responses', 'mentions.response_id', '=', 'responses.id')
+                    ->where('responses.run_id', $runId)
+                    ->distinct('mentions.brand_id')
+                    ->count('mentions.brand_id'),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Notification failed: ' . $e->getMessage());
+        }
         return [
             'run_id' => $runId,
             'model' => 'google-ai-overview',

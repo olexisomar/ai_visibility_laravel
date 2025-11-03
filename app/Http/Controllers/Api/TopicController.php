@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Topic;
+use App\Models\Persona;
 use App\Services\LLMService;
 use App\Services\SerpAPIService;
 use App\Services\GSCService;
@@ -33,6 +35,8 @@ class TopicController extends Controller
         $this->brandTokens = $brandTokens;
         $this->normalizer = $normalizer;
     }
+
+    // ========== EXISTING METHODS (UNCHANGED) ==========
 
     public function index(Request $request)
     {
@@ -147,6 +151,191 @@ class TopicController extends Controller
         }
     }
 
+    public function setActive(Request $request)
+    {
+        $id = $request->input('id');
+        $active = $request->input('active', 1);
+        
+        DB::table('topics')
+            ->where('id', $id)
+            ->update(['is_active' => $active, 'updated_at' => now()]);
+        
+        return response()->json(['ok' => true]);
+    }
+    
+    public function touch(Request $request)
+    {
+        $id = $request->input('id');
+        
+        DB::table('topics')
+            ->where('id', $id)
+            ->update(['last_generated_at' => null, 'updated_at' => now()]);
+        
+        return response()->json(['ok' => true]);
+    }
+
+    // ========== NEW METHODS (ADDED FOR PERSONA MAPPING) ==========
+
+    /**
+     * Get topics with persona mappings for new UI
+     */
+    public function indexWithPersonas(Request $request)
+    {
+        try {
+            $topics = Topic::with(['personas'])
+                ->where('is_deleted', false)
+                ->orderBy('created_at', 'desc')
+                ->get()
+                ->map(function ($topic) {
+                    return [
+                        'id' => $topic->id,
+                        'name' => $topic->name,
+                        'is_active' => $topic->is_active,
+                        'last_generated_at' => $topic->last_generated_at?->format('Y-m-d H:i:s'),
+                        'personas' => $topic->personas->map(fn($p) => [
+                            'id' => $p->id,
+                            'name' => $p->name,
+                        ]),
+                        'persona_count' => $topic->personas->count(),
+                        'pending_suggestions' => $topic->pendingSuggestionsCount(),
+                        'approved_prompts' => $topic->approvedPromptsCount(),
+                    ];
+                });
+
+            return response()->json(['rows' => $topics]);
+        } catch (\Exception $e) {
+            Log::error('Topic index with personas error: ' . $e->getMessage());
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Store topic with persona mappings
+     */
+    public function storeWithPersonas(Request $request)
+    {
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'persona_ids' => 'required|array|min:1',
+            'persona_ids.*' => 'exists:personas,id',
+            'brand_id' => 'nullable|string|max:100'
+        ], [
+            'persona_ids.required' => 'Please select at least one persona for this topic.',
+            'persona_ids.min' => 'Please select at least one persona for this topic.',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            // Create or update topic
+            $topic = Topic::updateOrCreate(
+                ['name' => $request->name],
+                [
+                    'brand_id' => $request->brand_id,
+                    'is_active' => true,
+                    'is_deleted' => false
+                ]
+            );
+
+            // Sync personas
+            $topic->personas()->sync($request->persona_ids);
+
+            DB::commit();
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Topic saved successfully',
+                'topic' => [
+                    'id' => $topic->id,
+                    'name' => $topic->name,
+                    'persona_count' => count($request->persona_ids)
+                ]
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Store topic with personas error: ' . $e->getMessage());
+            return response()->json([
+                'ok' => false,
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Update persona mappings for a topic
+     */
+    public function updatePersonas(Request $request, $id)
+    {
+        $request->validate([
+            'persona_ids' => 'required|array|min:1',
+            'persona_ids.*' => 'exists:personas,id',
+        ]);
+
+        try {
+            $topic = Topic::findOrFail($id);
+            $topic->personas()->sync($request->persona_ids);
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Personas updated successfully',
+                'persona_count' => count($request->persona_ids)
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Update personas error: ' . $e->getMessage());
+            return response()->json([
+                'ok' => false,
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get active personas for dropdown
+     */
+    public function getActivePersonas()
+    {
+        try {
+            $personas = Persona::where('is_active', true)
+                ->where('is_deleted', false)
+                ->orderBy('name')
+                ->get(['id', 'name']);
+
+            return response()->json($personas);
+        } catch (\Exception $e) {
+            Log::error('Get personas error: ' . $e->getMessage());
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Soft delete topic
+     */
+    public function destroy($id)
+    {
+        try {
+            DB::table('topics')
+                ->where('id', $id)
+                ->update([
+                    'is_deleted' => 1,
+                    'is_active' => 0,
+                    'updated_at' => now()
+                ]);
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Topic deleted successfully'
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Delete topic error: ' . $e->getMessage());
+            return response()->json([
+                'ok' => false,
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // ========== EXISTING PRIVATE METHODS (UNCHANGED) ==========
+
     /**
      * Process a batch of personas for a topic
      */
@@ -233,12 +422,13 @@ class TopicController extends Controller
                 continue;
             }
 
-            // Insert seeds into raw_suggestions
+            // Insert seeds into raw_suggestions WITH topic_id
             $rank = 1;
             foreach ($seeds as $seed) {
                 $inserted = $this->insertSuggestion(
                     $seed['q'],
                     $topic,
+                    $topicId,  // Pass topicId now
                     $persona['id'],
                     $seed['prov'],
                     $seed['b'],
@@ -260,6 +450,7 @@ class TopicController extends Controller
                     $seeds,
                     $tokens,
                     $topic,
+                    $topicId,  // Pass topicId now
                     $persona['id'],
                     $hl,
                     $gl,
@@ -306,15 +497,13 @@ class TopicController extends Controller
                 $ranked[] = [
                     'q' => $q,
                     'b' => 1,
-                    'w' => ($weights ? $this->gsc->scoreQuery($q, $weights) : 0) + 150, // boost branded
+                    'w' => ($weights ? $this->gsc->scoreQuery($q, $weights) : 0) + 150,
                     'prov' => $bundle['provider'],
                 ];
             }
 
-            // Sort by weight descending
             usort($ranked, fn($a, $b) => $b['w'] <=> $a['w']);
 
-            // Apply quotas
             if ($hasBrand) {
                 $branded = array_filter($ranked, fn($r) => $r['b'] === 1);
                 $generic = array_filter($ranked, fn($r) => $r['b'] === 0);
@@ -332,7 +521,6 @@ class TopicController extends Controller
             $perProviderSeeds[] = $ranked;
         }
 
-        // Even distribution across providers
         $providerCount = count($perProviderSeeds);
         if ($providerCount === 0) {
             return [];
@@ -341,7 +529,6 @@ class TopicController extends Controller
         $baseQuota = (int)floor($maxAITotal / $providerCount);
         $remainder = $maxAITotal - ($baseQuota * $providerCount);
 
-        // Build queues per provider
         $queues = [];
         foreach ($perProviderSeeds as $list) {
             if (empty($list)) continue;
@@ -355,7 +542,6 @@ class TopicController extends Controller
             }
         }
 
-        // Pre-select branded queries if brand exists
         $preSeeds = [];
         if ($hasBrand) {
             foreach (array_keys($queues) as $provName) {
@@ -369,7 +555,6 @@ class TopicController extends Controller
             }
         }
 
-        // Select remaining queries with de-duplication
         $selected = [];
         $normSeen = [];
         
@@ -397,10 +582,12 @@ class TopicController extends Controller
 
     /**
      * Insert suggestion into raw_suggestions table
+     * UPDATED: Now includes topic_id
      */
     private function insertSuggestion(
         string $text,
         string $topic,
+        int $topicId,      // ADDED
         int $personaId,
         array $provider,
         int $isBranded,
@@ -433,6 +620,7 @@ class TopicController extends Controller
                 'collected_at' => now(),
                 'category' => $topic,
                 'persona_id' => $personaId,
+                'topic_id' => $topicId,  // ADDED
                 'is_branded' => $isBranded,
                 'topic_cluster' => $topic,
                 'status' => 'new',
@@ -445,11 +633,13 @@ class TopicController extends Controller
 
     /**
      * Enrich with SerpAPI People Also Ask
+     * UPDATED: Now includes topic_id
      */
     private function enrichWithPAA(
         array $seeds,
         array $tokens,
         string $topic,
+        int $topicId,      // ADDED
         int $personaId,
         string $hl,
         string $gl,
@@ -472,7 +662,6 @@ class TopicController extends Controller
 
             $rankP = 1;
             foreach ($paaQuestions as $question) {
-                // Filter based on brand requirements
                 if ($isBranded && $hasBrand) {
                     if (!$this->brandTokens->hasToken($question, $tokens['brand']) ||
                         $this->brandTokens->hasToken($question, $tokens['competitors'])) {
@@ -505,6 +694,7 @@ class TopicController extends Controller
                         'collected_at' => now(),
                         'category' => $topic,
                         'persona_id' => $personaId,
+                        'topic_id' => $topicId,  // ADDED
                         'is_branded' => $isBranded,
                         'topic_cluster' => $topic,
                         'status' => 'new',
@@ -527,26 +717,26 @@ class TopicController extends Controller
         return $generated;
     }
     
-    public function setActive(Request $request)
+    /**
+     * Get single topic with personas
+     */
+    public function show($id)
     {
-        $id = $request->input('id');
-        $active = $request->input('active', 1);
-        
-        DB::table('topics')
-            ->where('id', $id)
-            ->update(['is_active' => $active, 'updated_at' => now()]);
-        
-        return response()->json(['ok' => true]);
-    }
-    
-    public function touch(Request $request)
-    {
-        $id = $request->input('id');
-        
-        DB::table('topics')
-            ->where('id', $id)
-            ->update(['last_generated_at' => null, 'updated_at' => now()]);
-        
-        return response()->json(['ok' => true]);
+        try {
+            $topic = Topic::with('personas')->findOrFail($id);
+            
+            return response()->json([
+                'id' => $topic->id,
+                'name' => $topic->name,
+                'is_active' => $topic->is_active,
+                'personas' => $topic->personas->map(fn($p) => [
+                    'id' => $p->id,
+                    'name' => $p->name,
+                ])
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Show topic error: ' . $e->getMessage());
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
     }
 }

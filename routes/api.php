@@ -56,12 +56,19 @@ Route::prefix('admin')->group(function () {
 
     // ==================== TOPICS ====================
     Route::prefix('topics')->name('admin.topics.')->group(function () {
+        Route::get('/with-personas', [TopicController::class, 'indexWithPersonas'])->name('indexWithPersonas');
+        Route::get('/personas', [TopicController::class, 'getActivePersonas'])->name('getPersonas');
+        Route::post('/store-with-personas', [TopicController::class, 'storeWithPersonas'])->name('storeWithPersonas');
+        Route::get('/{id}', [TopicController::class, 'show'])->name('show');
+        Route::put('/{id}/personas', [TopicController::class, 'updatePersonas'])->name('updatePersonas');
+        Route::delete('/{id}', [TopicController::class, 'destroy'])->name('destroy');
         Route::get('/', [TopicController::class, 'index'])->name('index');
         Route::post('/', [TopicController::class, 'store'])->name('store');
         Route::post('/set-active', [TopicController::class, 'setActive'])->name('setActive');
         Route::post('/touch', [TopicController::class, 'touch'])->name('touch');
-    });
 
+    });
+    
     // ==================== PERSONAS ====================
     Route::prefix('personas')->name('admin.personas.')->group(function () {
         Route::get('/', [PersonaController::class, 'index'])->name('index');
@@ -94,6 +101,29 @@ Route::prefix('admin')->group(function () {
         Route::post('/start', [RunController::class, 'start'])->name('start');
         Route::post('/{id}/stop', [RunController::class, 'stop'])->name('stop');
         Route::post('/aio/start', [RunController::class, 'startAIO'])->name('admin.aio.start');
+    });
+
+    // ==================== Notifications ====================
+    Route::prefix('notifications')->group(function () {
+        Route::get('/', function () {
+            $service = app(\App\Services\NotificationService::class);
+            return response()->json([
+                'notifications' => $service->getRecent(20),
+                'unread_count' => $service->getUnreadCount(),
+            ]);
+        });
+        
+        Route::post('/{id}/read', function ($id) {
+            $service = app(\App\Services\NotificationService::class);
+            $success = $service->markAsRead($id);
+            return response()->json(['ok' => $success]);
+        });
+        
+        Route::post('/read-all', function () {
+            $service = app(\App\Services\NotificationService::class);
+            $count = $service->markAllAsRead();
+            return response()->json(['marked' => $count]);
+        });
     });
 
     // Legacy endpoint alias (for the GET /api/admin/gpt call)

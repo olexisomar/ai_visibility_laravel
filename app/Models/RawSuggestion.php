@@ -14,6 +14,7 @@ class RawSuggestion extends Model
         'text',
         'category',
         'persona_id',
+        'topic_id',          // ← ADDED
         'is_branded',
         'notes',
         'rank',
@@ -46,6 +47,8 @@ class RawSuggestion extends Model
         'rejected_at' => 'datetime',
     ];
 
+    // ========== EXISTING RELATIONSHIPS (UNCHANGED) ==========
+    
     public function persona(): BelongsTo
     {
         return $this->belongsTo(Persona::class);
@@ -56,6 +59,18 @@ class RawSuggestion extends Model
         return $this->belongsTo(Prompt::class);
     }
 
+    // ========== NEW RELATIONSHIP (ADDED) ==========
+    
+    /**
+     * Get the topic this suggestion belongs to
+     */
+    public function topic(): BelongsTo
+    {
+        return $this->belongsTo(Topic::class);
+    }
+
+    // ========== EXISTING SCOPES (UNCHANGED) ==========
+    
     public function scopeNew($query)
     {
         return $query->where('status', 'new');
@@ -64,5 +79,39 @@ class RawSuggestion extends Model
     public function scopeApproved($query)
     {
         return $query->where('status', 'approved');
+    }
+
+    // ========== NEW SCOPES (ADDED) ==========
+    
+    /**
+     * Scope to pending suggestions
+     */
+    public function scopePending($query)
+    {
+        return $query->where('status', 'pending');
+    }
+
+    /**
+     * Scope to rejected suggestions
+     */
+    public function scopeRejected($query)
+    {
+        return $query->where('status', 'rejected');
+    }
+
+    /**
+     * Scope to suggestions for a specific topic
+     */
+    public function scopeForTopic($query, $topicId)
+    {
+        return $query->where('topic_id', $topicId);
+    }
+
+    /**
+     * Scope to suggestions for a specific persona
+     */
+    public function scopeForPersona($query, $personaId)
+    {
+        return $query->where('persona_id', $personaId);
     }
 }

@@ -13,6 +13,7 @@ class AutomationSetting extends Model
         'schedule_time',
         'max_runs_per_day',
         'notifications_enabled',
+        'notification_email',
     ];
 
     protected $casts = [
@@ -32,6 +33,7 @@ class AutomationSetting extends Model
             'schedule_time' => '09:00',
             'max_runs_per_day' => 10,
             'notifications_enabled' => false,
+            'notification_email' => null,
         ]);
     }
 

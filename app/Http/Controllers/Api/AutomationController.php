@@ -32,6 +32,7 @@ class AutomationController extends Controller
      */
     public function updateSettings(Request $request)
     {
+        Log::info('Automation settings update request:', $request->all());
         $validator = Validator::make($request->all(), [
             'schedule' => 'required|in:paused,weekly',
             'default_source' => 'required|in:gpt,google_aio,all',
@@ -39,8 +40,9 @@ class AutomationController extends Controller
             'schedule_time' => 'required|date_format:H:i',
             'max_runs_per_day' => 'required|integer|min:1|max:50',
             'notifications_enabled' => 'boolean',
+            'notification_email' => 'nullable|email|max:255',
         ]);
-
+        Log::info('Validated data:', $validator->validated());
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
@@ -53,6 +55,7 @@ class AutomationController extends Controller
             'schedule_time',
             'max_runs_per_day',
             'notifications_enabled',
+            'notification_email',
         ]));
 
         return response()->json([

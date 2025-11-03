@@ -1482,23 +1482,398 @@ const postJSON = (url, payload) =>
   fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload||{}) })
     .then(async r=>{ const j=await r.json().catch(()=>({})); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status)); return j; });
 
-async function loadTopicsList(){
-  const r = await fetch(`${API_BASE}/admin?action=list_topics`);
-  const j = await r.json();
-  const tb = $('#cfgTopicsTable tbody'); tb.innerHTML='';
-  (j.rows||[]).forEach(row=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${row.id}</td><td>${row.name}</td><td>${row.is_active?1:0}</td>
-      <td>${row.last_generated_at||'—'}</td>
-      <td>
-        <button class="btn pill-ok" data-act="regen" data-id="${row.id}" data-name="${row.name}">Regenerate</button>
-        <button class="btn pill-or" data-act="toggle" data-id="${row.id}" data-active="${row.is_active?1:0}">
-          ${row.is_active?'Deactivate':'Activate'}
-        </button>
-      </td>`;
-    tb.appendChild(tr);
+
+/* ---------- PERSONA MAPPING FOR TOPICS ---------- */
+
+// Load active personas for checkboxes
+let activePersonas = [];
+
+async function loadActivePersonas() {
+  try {
+    const res = await fetch(`${API_BASE}/topics/personas`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    const personas = await res.json();
+    activePersonas = Array.isArray(personas) ? personas : [];
+    return activePersonas;
+  } catch (e) {
+    console.error('Failed to load personas:', e);
+    return [];
+  }
+}
+
+// Enhanced topics list with persona info
+async function loadTopicsListWithPersonas() {
+  try {
+    const res = await fetch(`${API_BASE}/topics/with-personas`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    const j = await res.json();
+    
+    const tb = $('#cfgTopicsTable tbody');
+    tb.innerHTML = '';
+    
+    (j.rows || []).forEach(row => {
+      const personaNames = (row.personas || []).map(p => p.name).join(', ');
+      const personaCount = row.persona_count || 0;
+      const personaDisplay = personaCount > 0 
+        ? `${personaCount} selected` 
+        : '<span style="color:#ef4444">⚠️ None</span>';
+      
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${row.id}</td>
+        <td>${row.name}</td>
+        <td>${personaDisplay}</td>
+        <td>${row.is_active ? 1 : 0}</td>
+        <td>${row.last_generated_at || '—'}</td>
+        <td style="display:flex;gap:4px;">
+          <button class="btn pill-info" data-act="edit" data-id="${row.id}" 
+                  title="Edit personas">✏️ Edit</button>
+          <button class="btn pill-ok" data-act="regen" data-id="${row.id}" 
+                  data-name="${row.name}">Regenerate</button>
+          <button class="btn pill-or" data-act="toggle" data-id="${row.id}" 
+                  data-active="${row.is_active ? 1 : 0}">
+            ${row.is_active ? 'Deactivate' : 'Activate'}
+          </button>
+        </td>
+      `;
+      tb.appendChild(tr);
+    });
+    
+    if (!j.rows || j.rows.length === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="6" class="mono" style="opacity:.7">No topics yet.</td>';
+      tb.appendChild(tr);
+    }
+  } catch (e) {
+    console.error('Failed to load topics:', e);
+  }
+}
+
+// Show persona selection modal
+async function showPersonaModal(topicId, topicName) {
+  // Load personas if not already loaded
+  if (activePersonas.length === 0) {
+    await loadActivePersonas();
+  }
+  
+  if (activePersonas.length === 0) {
+    alert('No personas found. Create at least one persona first.');
+    return;
+  }
+  
+  // Get current mappings
+  let currentPersonas = [];
+  try {
+    const res = await fetch(`${API_BASE}/topics/${topicId}`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    const data = await res.json();
+    currentPersonas = (data.personas || []).map(p => p.id);
+  } catch (e) {
+    console.error('Failed to load topic personas:', e);
+  }
+  
+  // Build modal HTML
+  const modalHTML = `
+    <div id="personaModal" class="modal" style="display:block">
+      <div class="modal-content" style="max-width:500px;background:#fff;padding:24px;border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="margin:0">Select Personas for "${topicName}"</h3>
+          <button class="btn alt" onclick="closePersonaModal()">&times;</button>
+        </div>
+        
+        <p style="color:#666;font-size:14px;margin-bottom:16px;">
+          Choose which personas should generate suggestions for this topic:
+        </p>
+        
+        <div id="personaCheckboxes" style="max-height:300px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;padding:12px;">
+          ${activePersonas.map(p => `
+            <label style="display:block;padding:8px;cursor:pointer;border-radius:4px;transition:background 0.2s;"
+                   onmouseover="this.style.background='#f3f4f6'"
+                   onmouseout="this.style.background='white'">
+              <input type="checkbox" 
+                     class="persona-checkbox" 
+                     value="${p.id}" 
+                     ${currentPersonas.includes(p.id) ? 'checked' : ''}
+                     style="margin-right:8px;">
+              <span style="font-weight:500;">${p.name}</span>
+            </label>
+          `).join('')}
+        </div>
+        
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #e5e7eb;">
+          <div id="personaModalMsg" class="mono" style="color:#ef4444;font-size:12px;min-height:20px;"></div>
+        </div>
+        
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+          <button class="btn alt" onclick="closePersonaModal()">Cancel</button>
+          <button class="btn pill-ok" onclick="saveTopicPersonas(${topicId})">Save Personas</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Add to page
+  const existing = document.getElementById('personaModal');
+  if (existing) existing.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+// Show persona selection matrix for bulk topic creation
+function showBulkTopicPersonaModal(topics) {
+  const modalHTML = `
+    <div id="bulkPersonaModal" class="modal" style="display:block">
+      <div class="modal-content" style="max-width:900px;background:#fff;padding:24px;border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="margin:0">Map Personas to ${topics.length} Topic(s)</h3>
+          <button class="btn alt" onclick="closeBulkPersonaModal()">&times;</button>
+        </div>
+        
+        <p style="color:#666;font-size:14px;margin-bottom:16px;">
+          Select which personas should generate suggestions for each topic:
+        </p>
+        
+        <div style="overflow-x:auto;max-height:500px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">
+          <table style="width:100%;border-collapse:collapse;font-size:14px;">
+            <thead style="position:sticky;top:0;background:#f9fafb;z-index:10;">
+              <tr>
+                <th style="padding:12px;text-align:left;border-bottom:2px solid #e5e7eb;border-right:1px solid #e5e7eb;min-width:200px;">
+                  Topic
+                </th>
+                ${activePersonas.map(p => `
+                  <th style="padding:12px;text-align:center;border-bottom:2px solid #e5e7eb;border-right:1px solid #e5e7eb;min-width:120px;">
+                    <div style="font-weight:600;margin-bottom:4px;">${p.name}</div>
+                    <label style="font-weight:400;font-size:12px;color:#6b7280;cursor:pointer;">
+                      <input type="checkbox" class="select-all-persona" data-persona-id="${p.id}" 
+                             style="margin-right:4px;">
+                      Select All
+                    </label>
+                  </th>
+                `).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${topics.map((topic, topicIdx) => `
+                <tr style="border-bottom:1px solid #e5e7eb;">
+                  <td style="padding:12px;border-right:1px solid #e5e7eb;font-weight:500;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <span>${topic}</span>
+                      <label style="font-size:12px;color:#6b7280;font-weight:400;cursor:pointer;margin-left:auto;">
+                        <input type="checkbox" class="select-all-topic" data-topic-idx="${topicIdx}"
+                               style="margin-right:4px;">
+                        All
+                      </label>
+                    </div>
+                  </td>
+                  ${activePersonas.map(p => `
+                    <td style="padding:12px;text-align:center;border-right:1px solid #e5e7eb;background:#fafafa;">
+                      <input type="checkbox" 
+                             class="topic-persona-checkbox" 
+                             data-topic-idx="${topicIdx}"
+                             data-persona-id="${p.id}"
+                             checked
+                             style="width:18px;height:18px;cursor:pointer;">
+                    </td>
+                  `).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #e5e7eb;">
+          <div id="bulkPersonaModalMsg" class="mono" style="color:#ef4444;font-size:12px;min-height:20px;"></div>
+        </div>
+        
+        <div style="display:flex;gap:8px;justify-content:space-between;margin-top:16px;">
+          <div style="display:flex;gap:8px;">
+            <button class="btn pill-info" onclick="selectAllMatrix()">Select All</button>
+            <button class="btn alt" onclick="deselectAllMatrix()">Deselect All</button>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn alt" onclick="closeBulkPersonaModal()">Cancel</button>
+            <button class="btn pill-ok" onclick="saveBulkTopicsWithPersonas()">Save & Generate</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existing = document.getElementById('bulkPersonaModal');
+  if (existing) existing.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+  
+  // Add event listeners for "Select All" checkboxes
+  
+  // Select all for a persona (column)
+  document.querySelectorAll('.select-all-persona').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const personaId = e.target.dataset.personaId;
+      const checked = e.target.checked;
+      document.querySelectorAll(`[data-persona-id="${personaId}"].topic-persona-checkbox`).forEach(box => {
+        box.checked = checked;
+      });
+    });
+  });
+  
+  // Select all for a topic (row)
+  document.querySelectorAll('.select-all-topic').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const topicIdx = e.target.dataset.topicIdx;
+      const checked = e.target.checked;
+      document.querySelectorAll(`[data-topic-idx="${topicIdx}"].topic-persona-checkbox`).forEach(box => {
+        box.checked = checked;
+      });
+    });
   });
 }
+
+// Select all checkboxes in matrix
+window.selectAllMatrix = function() {
+  document.querySelectorAll('.topic-persona-checkbox').forEach(cb => cb.checked = true);
+  document.querySelectorAll('.select-all-persona').forEach(cb => cb.checked = true);
+  document.querySelectorAll('.select-all-topic').forEach(cb => cb.checked = true);
+};
+
+// Deselect all checkboxes in matrix
+window.deselectAllMatrix = function() {
+  document.querySelectorAll('.topic-persona-checkbox').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.select-all-persona').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.select-all-topic').forEach(cb => cb.checked = false);
+};
+
+// Close bulk modal
+window.closeBulkPersonaModal = function() {
+  const modal = document.getElementById('bulkPersonaModal');
+  if (modal) modal.remove();
+  $('#cfgTopics').value = ''; // Clear textarea
+};
+
+// Save topics with selected personas from matrix
+window.saveBulkTopicsWithPersonas = async function() {
+  const msgEl = document.getElementById('bulkPersonaModalMsg');
+  
+  const raw = ($('#cfgTopics').value || '').trim();
+  const topics = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  
+  // Build array: [{ topic: "...", persona_ids: [1,2,3] }, ...]
+  const topicPersonaMappings = topics.map((topic, idx) => {
+    const checkboxes = document.querySelectorAll(`.topic-persona-checkbox[data-topic-idx="${idx}"]:checked`);
+    const personaIds = Array.from(checkboxes).map(cb => parseInt(cb.dataset.personaId));
+    return { topic, persona_ids: personaIds };
+  });
+  
+  // Validate: each topic needs at least one persona
+  const invalid = topicPersonaMappings.filter(m => m.persona_ids.length === 0);
+  if (invalid.length > 0) {
+    msgEl.textContent = `⚠️ Select at least one persona for each topic (${invalid.length} topic(s) have none)`;
+    return;
+  }
+  
+  try {
+    msgEl.textContent = 'Creating topics and generating suggestions...';
+    msgEl.style.color = '#f59e0b';
+    
+    // Create each topic with its personas
+    for (let i = 0; i < topicPersonaMappings.length; i++) {
+      const mapping = topicPersonaMappings[i];
+      
+      msgEl.textContent = `(${i + 1}/${topics.length}) Creating "${mapping.topic}"...`;
+      
+      // Create topic with personas
+      const res = await fetch(`${API_BASE}/topics/store-with-personas`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': API_KEY
+        },
+        body: JSON.stringify({
+          name: mapping.topic,
+          persona_ids: mapping.persona_ids
+        })
+      });
+      
+      const result = await res.json();
+      
+      if (!res.ok || result.error) {
+        throw new Error(result.error || 'Failed to create topic');
+      }
+      
+      // Now generate for this topic with selected personas
+      msgEl.textContent = `(${i + 1}/${topics.length}) Generating for "${mapping.topic}"...`;
+      await runTopicBatched(mapping.topic);
+    }
+    
+    // Success
+    $('#cfgTopicsMsg').textContent = `✓ All ${topics.length} topic(s) created and generated!`;
+    $('#cfgTopicsMsg').style.color = '#10b981';
+    
+    closeBulkPersonaModal();
+    await loadTopicsListWithPersonas();
+    if (typeof loadPending === 'function') loadPending();
+    if (typeof refreshPendingBadge === 'function') refreshPendingBadge();
+    
+    setTimeout(() => {
+      if ($('#cfgTopicsMsg').textContent.includes('created')) {
+        $('#cfgTopicsMsg').textContent = '';
+        $('#cfgTopicsMsg').style.color = '';
+      }
+    }, 5000);
+    
+  } catch (e) {
+    msgEl.textContent = '✗ Error: ' + e.message;
+    msgEl.style.color = '#ef4444';
+  }
+};
+
+// Close modal
+window.closePersonaModal = function() {
+  const modal = document.getElementById('personaModal');
+  if (modal) modal.remove();
+};
+
+// Save persona mappings
+window.saveTopicPersonas = async function(topicId) {
+  const checkboxes = document.querySelectorAll('.persona-checkbox:checked');
+  const personaIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+  
+  const msgEl = document.getElementById('personaModalMsg');
+  
+  if (personaIds.length === 0) {
+    msgEl.textContent = '⚠️ Please select at least one persona';
+    return;
+  }
+  
+  try {
+    const res = await fetch(`${API_BASE}/topics/${topicId}/personas`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': API_KEY
+      },
+      body: JSON.stringify({ persona_ids: personaIds })
+    });
+    
+    const result = await res.json();
+    
+    if (!res.ok || result.error) {
+      throw new Error(result.error || 'Failed to save');
+    }
+    
+    // Success
+    closePersonaModal();
+    await loadTopicsListWithPersonas();
+    
+  } catch (e) {
+    msgEl.textContent = '✗ Error: ' + e.message;
+  }
+};
+
+/* ---------- END PERSONA MAPPING ---------- */
 async function loadPersonasList(){
   const r = await fetch(`${API_BASE}/admin?action=list_personas`);
   const j = await r.json();
@@ -1534,7 +1909,13 @@ async function loadBrandsIntoPersonaSelect(){
   });
 }
 
-async function loadConfig(){ await Promise.all([loadTopicsList(), loadPersonasList(), loadBrandsIntoPersonaSelect()]); }
+async function loadConfig(){ 
+  await Promise.all([
+    loadTopicsListWithPersonas(),  // ← CHANGED
+    loadPersonasList(), 
+    loadBrandsIntoPersonaSelect()
+  ]); 
+}
 
 // --- batching settings (tune if needed)
 const PERSONAS_PER_CALL = 4;   // try 3 if your server is tight
@@ -1588,54 +1969,84 @@ async function runTopicBatched(topic) {
   }, 5000);
 }
 
-$('#cfgSaveTopics')?.addEventListener('click', async ()=> {
-  const raw = ($('#cfgTopics').value||'').trim();
-  const topics = raw.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  if (!topics.length){ 
-    $('#cfgTopicsMsg').textContent = 'Nothing to save.'; 
-    return; 
+$('#cfgSaveTopics')?.addEventListener('click', async () => {
+  const raw = ($('#cfgTopics').value || '').trim();
+  const topics = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  
+  if (!topics.length) {
+    $('#cfgTopicsMsg').textContent = 'Nothing to save.';
+    return;
   }
-
+  
   try {
-    for (let i = 0; i < topics.length; i++) {
-      $('#cfgTopicsMsg').textContent = `(${i+1}/${topics.length}) Starting "${topics[i]}"…`;
-      await runTopicBatched(topics[i]);
+    // Load personas first
+    if (activePersonas.length === 0) {
+      await loadActivePersonas();
     }
     
-    // Final success message
-    $('#cfgTopicsMsg').textContent = `✓ All ${topics.length} topic(s) completed successfully!`;
-    $('#cfgTopics').value='';
+    if (activePersonas.length === 0) {
+      $('#cfgTopicsMsg').textContent = '✗ No personas found. Create at least one persona first.';
+      return;
+    }
     
-    // Reload the topics table
-    await loadTopicsList();
+    // Show persona selection modal for the topics
+    showBulkTopicPersonaModal(topics);
     
-    // Refresh pending suggestions count
-    if (typeof loadPending === 'function') loadPending();
-    if (typeof refreshPendingBadge === 'function') refreshPendingBadge();
-    
-    // Auto-clear success message after 5 seconds
-    setTimeout(() => {
-      if ($('#cfgTopicsMsg').textContent.includes('completed')) {
-        $('#cfgTopicsMsg').textContent = '';
-      }
-    }, 5000);
   } catch (e) {
     $('#cfgTopicsMsg').textContent = '✗ Error: ' + e.message;
   }
 });
 
+// Topics table actions
 $('#cfgTopicsTable')?.addEventListener('click', async (e)=>{
-  const t=e.target; const id = Number(t.dataset.id||0); if(!id) return;
-  if (t.dataset.act==='toggle'){
-    const active = t.dataset.active==='1'?0:1;
-    await postJSON(`${API_BASE}/admin?action=topic_set_active`, {id, active});
-    await loadTopicsList(); return;
+  const t = e.target; 
+  const id = Number(t.dataset.id || 0); 
+  if (!id) return;
+  
+  // NEW: Edit personas
+  if (t.dataset.act === 'edit') {
+    const name = t.closest('tr').querySelector('td:nth-child(2)').textContent;
+    await showPersonaModal(id, name);
+    return;
   }
-  if (t.dataset.act==='regen'){
-    const name = t.dataset.name||'';
-    await postJSON(`${API_BASE}/admin?action=topic_touch`, {id});
-    await runTopicBatched(name);
-    await loadTopicsList(); if (typeof loadPending==='function') loadPending();
+  
+  // Toggle active/inactive
+  if (t.dataset.act === 'toggle') {
+    const active = t.dataset.active === '1' ? 0 : 1;
+    try {
+      await fetch(`${API_BASE}/topics/set-active`, {  // ← FIXED: Added parenthesis
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': API_KEY
+        },
+        body: JSON.stringify({ id, active })
+      });
+      await loadTopicsListWithPersonas();
+    } catch (e) {
+      alert('Toggle failed: ' + e.message);
+    }
+    return;
+  }
+  
+  // Regenerate
+  if (t.dataset.act === 'regen') {
+    const name = t.dataset.name || '';
+    try {
+      await fetch(`${API_BASE}/topics/touch`, {  // ← FIXED: Added parenthesis
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': API_KEY
+        },
+        body: JSON.stringify({ id })
+      });
+      await runTopicBatched(name);
+      await loadTopicsListWithPersonas();
+      if (typeof loadPending === 'function') loadPending();
+    } catch (e) {
+      alert('Regenerate failed: ' + e.message);
+    }
     return;
   }
 });
