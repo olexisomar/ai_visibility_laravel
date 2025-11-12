@@ -3,10 +3,14 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use App\Traits\BelongsToAccount;
 
 class Topic extends Model
 {
+    use BelongsToAccount;
+
     protected $fillable = [
+        'account_id',
         'name',
         'brand_id',           // ← ADDED
         'is_active',
@@ -16,6 +20,7 @@ class Topic extends Model
     ];
 
     protected $casts = [
+        
         'is_active' => 'boolean',
         'is_deleted' => 'boolean',    // ← ADDED
         'last_generated_at' => 'datetime',

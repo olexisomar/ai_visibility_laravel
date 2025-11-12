@@ -6,13 +6,34 @@ use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class PerformanceController extends Controller
 {
+    /**
+     * Get current account ID
+     */
+    private function getAccountId(): int
+    {
+        $accountId = session('account_id');
+        
+        if (!$accountId) {
+            throw new \Exception('No account selected');
+        }
+        
+        return $accountId;
+    }
+
     public function index(Request $request)
     {
-        $action = $request->input('action', 'brand_mentions_overtime');
+        try {
+            $accountId = $this->getAccountId();
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 403);
+        }
 
+        $action = $request->input('action', 'brand_mentions_overtime');
+        
         return match($action) {
             'brand_mentions_overtime' => $this->brandMentionsOvertime($request),
             'citations_overtime' => $this->citationsOvertime($request),
@@ -31,29 +52,32 @@ class PerformanceController extends Controller
 
     private function buildFilters(Request $request): array
     {
-        $params = [];
-        $where = [];
-
+        $accountId = $this->getAccountId();
+        
+        $params = [$accountId]; // ← START WITH ACCOUNT_ID
+        $where = ['r.account_id = ?']; // ← ADD ACCOUNT FILTER
+        
         $from = $request->input('from');
         $to = $request->input('to');
-
+        
         if (!$from || !$to) {
             $to = date('Y-m-d');
             $from = date('Y-m-d', strtotime('-21 days'));
         }
-
-        $where[] = 'runs.started_at >= ?';  // ✅ CHANGED
+        
+        $where[] = 'runs.started_at >= ?';
         $params[] = $from;
-        $where[] = 'runs.started_at < DATE_ADD(?, INTERVAL 1 DAY)';  // ✅ CHANGED
+        
+        $where[] = 'runs.started_at < DATE_ADD(?, INTERVAL 1 DAY)';
         $params[] = $to;
-
+        
         $model = $request->input('model', 'all');
         if ($model === 'gpt') {
             $where[] = "runs.model LIKE 'gpt%'";
         } elseif ($model === 'google-ai-overview') {
             $where[] = "runs.model = 'google-ai-overview'";
         }
-
+        
         // Topics filter
         $topics = $request->input('topic');
         if ($topics) {
@@ -64,16 +88,16 @@ class PerformanceController extends Controller
             $where[] = "COALESCE(r.prompt_category, pr.category) IN ($placeholders)";
             $params = array_merge($params, $topics);
         }
-
+        
         // Intent filter
         $intent = $request->input('intent');
         if ($intent && $intent !== 'all') {
             $where[] = 'r.intent = ?';
             $params[] = $intent;
         }
-
-        $whereClause = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
-
+        
+        $whereClause = 'WHERE ' . implode(' AND ', $where);
+        
         return ['where' => $whereClause, 'params' => $params, 'from' => $from, 'to' => $to];
     }
 
@@ -82,31 +106,32 @@ class PerformanceController extends Controller
         $groupBy = strtolower($request->input('group_by', 'week'));
         
         if ($groupBy === 'day') {
-            return "DATE(runs.started_at)";  // ✅ CHANGED
+            return "DATE(runs.started_at)";
         }
         
-        return "DATE_FORMAT(DATE_SUB(runs.started_at, INTERVAL (WEEKDAY(runs.started_at)) DAY), '%Y-%m-%d')";  // ✅ CHANGED
+        return "DATE_FORMAT(DATE_SUB(runs.started_at, INTERVAL (WEEKDAY(runs.started_at)) DAY), '%Y-%m-%d')";
     }
 
     private function brandMentionsOvertime(Request $request)
     {
         $filters = $this->buildFilters($request);
         $bucketExpr = $this->getBucketExpression($request);
+        
         $brands = $request->input('brand', []);
         
         if (is_string($brands)) {
             $brands = $brands ? [$brands] : [];
         }
-
+        
         $joinScoped = "LEFT JOIN mentions m ON m.response_id = r.id";
         $joinAll = "LEFT JOIN mentions m_all ON m_all.response_id = r.id";
-
+        
         if (!empty($brands)) {
             $placeholders = implode(',', array_fill(0, count($brands), '?'));
             $joinScoped = "LEFT JOIN mentions m ON m.response_id = r.id AND m.brand_id IN ($placeholders)";
             $filters['params'] = array_merge($filters['params'], $brands);
         }
-
+        
         $sql = "SELECT
                 {$bucketExpr} AS week_start,
                 COUNT(DISTINCT r.id) AS total_responses,
@@ -121,9 +146,9 @@ class PerformanceController extends Controller
             {$filters['where']}
             GROUP BY week_start
             ORDER BY week_start ASC";
-
+        
         $results = DB::select($sql, $filters['params']);
-
+        
         $rows = [];
         foreach ($results as $row) {
             $rows[] = [
@@ -134,7 +159,7 @@ class PerformanceController extends Controller
                 'total' => (int) $row->total_responses,
             ];
         }
-
+        
         return response()->json(['rows' => $rows]);
     }
 
@@ -142,7 +167,7 @@ class PerformanceController extends Controller
     {
         $filters = $this->buildFilters($request);
         $bucketExpr = $this->getBucketExpression($request);
-
+        
         $sql = "SELECT
                 {$bucketExpr} AS week_start,
                 COUNT(DISTINCT r.id) AS total_responses,
@@ -154,9 +179,9 @@ class PerformanceController extends Controller
             {$filters['where']}
             GROUP BY week_start
             ORDER BY week_start ASC";
-
+        
         $results = DB::select($sql, $filters['params']);
-
+        
         $rows = [];
         foreach ($results as $row) {
             $total = (int) $row->total_responses;
@@ -168,7 +193,7 @@ class PerformanceController extends Controller
                 'total' => $total,
             ];
         }
-
+        
         return response()->json(['rows' => $rows]);
     }
 
@@ -176,7 +201,7 @@ class PerformanceController extends Controller
     {
         $filters = $this->buildFilters($request);
         $bucketExpr = $this->getBucketExpression($request);
-
+        
         $sql = "SELECT
                 {$bucketExpr} AS week_start,
                 COUNT(DISTINCT CASE WHEN r.intent='informational' AND m.response_id IS NOT NULL THEN r.id END) AS informational,
@@ -191,9 +216,9 @@ class PerformanceController extends Controller
             {$filters['where']}
             GROUP BY week_start
             ORDER BY week_start ASC";
-
+        
         $results = DB::select($sql, $filters['params']);
-
+        
         $rows = [];
         foreach ($results as $row) {
             $rows[] = [
@@ -205,7 +230,7 @@ class PerformanceController extends Controller
                 'total' => (int) $row->total_mentioned,
             ];
         }
-
+        
         return response()->json(['rows' => $rows]);
     }
 
@@ -213,7 +238,7 @@ class PerformanceController extends Controller
     {
         $filters = $this->buildFilters($request);
         $bucketExpr = $this->getBucketExpression($request);
-
+        
         $sql = "SELECT
                 {$bucketExpr} AS week_start,
                 COUNT(m.id) AS total,
@@ -227,9 +252,9 @@ class PerformanceController extends Controller
             {$filters['where']}
             GROUP BY week_start
             ORDER BY week_start ASC";
-
+        
         $results = DB::select($sql, $filters['params']);
-
+        
         $rows = [];
         foreach ($results as $row) {
             $rows[] = [
@@ -240,7 +265,7 @@ class PerformanceController extends Controller
                 'total' => (int) $row->total,
             ];
         }
-
+        
         return response()->json(['rows' => $rows]);
     }
 
@@ -248,7 +273,7 @@ class PerformanceController extends Controller
     {
         $filters = $this->buildFilters($request);
         $bucketExpr = $this->getBucketExpression($request);
-
+        
         $sql = "SELECT
                 {$bucketExpr} AS week_start,
                 COALESCE(p.name, '(unassigned)') AS persona,
@@ -260,9 +285,9 @@ class PerformanceController extends Controller
             {$filters['where']}
             GROUP BY week_start, persona
             ORDER BY week_start ASC";
-
+        
         $results = DB::select($sql, $filters['params']);
-
+        
         $rows = [];
         foreach ($results as $row) {
             $rows[] = [
@@ -271,7 +296,7 @@ class PerformanceController extends Controller
                 'count' => (int) $row->cnt,
             ];
         }
-
+        
         return response()->json(['rows' => $rows]);
     }
 
@@ -280,9 +305,9 @@ class PerformanceController extends Controller
         $filters = $this->buildFilters($request);
         $polarity = $request->input('polarity', 'positive');
         $brand = $request->input('brand');
-        $metric = $request->input('metric', 'citations'); // NEW: mentions or citations
+        $metric = $request->input('metric', 'citations');
         $ownedHost = $request->input('owned_host', '');
-
+        
         // Get response IDs matching sentiment + brand filter
         $sql = "SELECT DISTINCT m.response_id
                 FROM mentions m
@@ -291,34 +316,33 @@ class PerformanceController extends Controller
                 LEFT JOIN prompts pr ON pr.id = r.prompt_id
                 {$filters['where']}
                 AND LOWER(m.sentiment) = ?";
-
+        
         $params = $filters['params'];
         $params[] = strtolower($polarity);
-
+        
         if ($brand) {
             $sql .= " AND m.brand_id = ?";
             $params[] = $brand;
         }
-
+        
         $responseIds = DB::select($sql, $params);
         $ids = array_column($responseIds, 'response_id');
-
+        
         if (empty($ids)) {
             return response()->json([
-                'total' => 0, 
-                'rows' => [], 
-                'owned_host' => $ownedHost, 
-                'brand_id' => $brand, 
+                'total' => 0,
+                'rows' => [],
+                'owned_host' => $ownedHost,
+                'brand_id' => $brand,
                 'polarity' => $polarity,
                 'metric' => $metric
             ]);
         }
-
+        
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
-
+        
         // METRIC: BY BRAND MENTIONS
         if ($metric === 'mentions') {
-            // Count which brands were mentioned in these responses
             $mentionsSql = "SELECT 
                                 m.brand_id AS domain,
                                 COUNT(DISTINCT m.response_id) AS cnt
@@ -331,9 +355,8 @@ class PerformanceController extends Controller
             
             $mentionsParams = array_merge($ids, [strtolower($polarity)]);
             $domains = DB::select($mentionsSql, $mentionsParams);
-
             $grandTotal = array_sum(array_column($domains, 'cnt'));
-
+            
             $rows = [];
             foreach ($domains as $d) {
                 $cnt = (int) $d->cnt;
@@ -343,7 +366,7 @@ class PerformanceController extends Controller
                     'pct' => $grandTotal ? round(100 * $cnt / $grandTotal, 2) : 0.0,
                 ];
             }
-
+            
             return response()->json([
                 'total' => $grandTotal,
                 'rows' => $rows,
@@ -353,19 +376,17 @@ class PerformanceController extends Controller
                 'metric' => $metric,
             ]);
         }
-
-        // METRIC: BY WEBSITE CITATIONS (original logic)
-        // Get total links count
+        
+        // METRIC: BY WEBSITE CITATIONS
         $totalLinksSql = "SELECT COUNT(*) AS total FROM (
-                            SELECT DISTINCT response_id, 
+                            SELECT DISTINCT response_id,
                                 LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(url), '://', -1), '/', 1)) AS dom
                             FROM response_links
                             WHERE response_id IN ($placeholders)
                         ) t";
         
         $totalLinks = (int) DB::select($totalLinksSql, $ids)[0]->total;
-
-        // Get unsourced count (if owned host provided)
+        
         $totalUnsourced = 0;
         if ($ownedHost) {
             $unsourcedSql = "SELECT COUNT(*) AS cnt FROM (
@@ -388,10 +409,9 @@ class PerformanceController extends Controller
             $unsourcedParams = array_merge($ids, $ids, [strtolower($ownedHost)]);
             $totalUnsourced = (int) DB::select($unsourcedSql, $unsourcedParams)[0]->cnt;
         }
-
+        
         $grandTotal = $totalLinks + $totalUnsourced;
-
-        // Get domain histogram
+        
         $domainSql = "SELECT
                         CASE WHEN dom LIKE 'www.%' THEN SUBSTRING(dom, 5) ELSE dom END AS domain,
                         COUNT(*) AS cnt
@@ -405,9 +425,9 @@ class PerformanceController extends Controller
                     GROUP BY domain
                     ORDER BY cnt DESC, domain ASC
                     LIMIT 50";
-
+        
         $domains = DB::select($domainSql, $ids);
-
+        
         $rows = [];
         foreach ($domains as $d) {
             $cnt = (int) $d->cnt;
@@ -417,7 +437,7 @@ class PerformanceController extends Controller
                 'pct' => $grandTotal ? round(100 * $cnt / $grandTotal, 2) : 0.0,
             ];
         }
-
+        
         if ($ownedHost && $totalUnsourced > 0) {
             $rows[] = [
                 'domain' => '(unsourced)',
@@ -425,15 +445,14 @@ class PerformanceController extends Controller
                 'pct' => $grandTotal ? round(100 * $totalUnsourced / $grandTotal, 2) : 0.0,
             ];
         }
-
-        // Sort by count desc
+        
         usort($rows, function($a, $b) {
             if ($a['count'] === $b['count']) {
                 return strcmp($a['domain'], $b['domain']);
             }
             return $b['count'] <=> $a['count'];
         });
-
+        
         return response()->json([
             'total' => $grandTotal,
             'rows' => $rows,
@@ -453,10 +472,9 @@ class PerformanceController extends Controller
         $page = max(1, (int) $request->input('page', 1));
         $pageSize = min(100, max(10, (int) $request->input('page_size', 20)));
         $offset = ($page - 1) * $pageSize;
-
+        
         $filters = $this->buildFilters($request);
-
-        // Base query for responses matching sentiment
+        
         $baseSql = "SELECT DISTINCT m.response_id
                     FROM mentions m
                     JOIN responses r ON r.id = m.response_id
@@ -464,17 +482,16 @@ class PerformanceController extends Controller
                     LEFT JOIN prompts pr ON pr.id = r.prompt_id
                     {$filters['where']}
                     AND LOWER(m.sentiment) = ?";
-
+        
         $baseParams = $filters['params'];
         $baseParams[] = strtolower($polarity);
-
+        
         if ($brand) {
             $baseSql .= " AND m.brand_id = ?";
             $baseParams[] = $brand;
         }
-
+        
         if ($domain === '(unsourced)' && $ownedHost) {
-            // Get responses without owned host link
             $countSql = "SELECT COUNT(*) AS total FROM ($baseSql) q
                         WHERE NOT EXISTS (
                             SELECT 1
@@ -488,10 +505,10 @@ class PerformanceController extends Controller
                                 END
                             ) = ?
                         )";
-
+            
             $countParams = array_merge($baseParams, [strtolower($ownedHost)]);
             $total = (int) DB::select($countSql, $countParams)[0]->total;
-
+            
             $rowsSql = "SELECT
                             r.raw_answer AS statement,
                             'Unsourced' AS source,
@@ -516,14 +533,13 @@ class PerformanceController extends Controller
                         )
                         ORDER BY runs.run_at DESC, r.id DESC
                         LIMIT $pageSize OFFSET $offset";
-
+            
             $rowsParams = array_merge($baseParams, [strtolower($ownedHost)]);
             $rows = DB::select($rowsSql, $rowsParams);
-
+            
         } elseif ($domain && $domain !== '(unsourced)') {
-            // Specific domain
             $host = strtolower($domain);
-
+            
             $countSql = "SELECT COUNT(*) FROM (
                             SELECT DISTINCT q.response_id
                             FROM ($baseSql) q
@@ -536,15 +552,10 @@ class PerformanceController extends Controller
                                 END
                             ) = ?
                         ) x";
-
+            
             $countParams = array_merge($baseParams, [$host]);
-            \Log::info('Sentiment Explore Query', [
-                'domain' => $domain,
-                'countSql' => $countSql,
-                'countParams' => $countParams,
-            ]);
             $total = (int) DB::select($countSql, $countParams)[0]->{'COUNT(*)'};
-
+            
             $rowsSql = "SELECT
                             r.raw_answer AS statement,
                             LOWER(CASE WHEN d.dom LIKE 'www.%' THEN SUBSTRING(d.dom, 5) ELSE d.dom END) AS source,
@@ -564,22 +575,20 @@ class PerformanceController extends Controller
                         WHERE (CASE WHEN d.dom LIKE 'www.%' THEN SUBSTRING(d.dom, 5) ELSE d.dom END) = ?
                         ORDER BY runs.run_at DESC, r.id DESC
                         LIMIT $pageSize OFFSET $offset";
-
+            
             $rowsParams = array_merge($baseParams, [$host]);
             $rows = DB::select($rowsSql, $rowsParams);
-
+            
         } else {
-            // All sources - no domain filter
-            // Each response can appear multiple times (one per source link)
             $countSql = "SELECT COUNT(*) FROM (
                             SELECT q.response_id, rl.url
                             FROM ($baseSql) q
                             LEFT JOIN response_links rl ON rl.response_id = q.response_id
                         ) x";
-
+            
             $countParams = $baseParams;
             $total = (int) DB::select($countSql, $countParams)[0]->{'COUNT(*)'};
-
+            
             $rowsSql = "SELECT
                             r.raw_answer AS statement,
                             COALESCE(
@@ -602,14 +611,13 @@ class PerformanceController extends Controller
                         LEFT JOIN response_links rl ON rl.response_id = q.response_id
                         ORDER BY runs.run_at DESC, r.id DESC, rl.url
                         LIMIT $pageSize OFFSET $offset";
-
+            
             $rowsParams = $baseParams;
             $rows = DB::select($rowsSql, $rowsParams);
         }
-
-        // Extract keywords from statements
+        
         $keywords = $this->extractKeywords(array_column($rows, 'statement'));
-
+        
         return response()->json([
             'total' => $total,
             'page' => $page,
@@ -623,11 +631,11 @@ class PerformanceController extends Controller
     {
         $keywords = [];
         $stopwords = ['the', 'and', 'for', 'you', 'but', 'with', 'are', 'was', 'were', 'this', 'that', 'have', 'has', 'had', 'not', 'from', 'they', 'their', 'them', 'our', 'out', 'your', 'can', 'all', 'more', 'some', 'like'];
-
+        
         foreach ($texts as $text) {
             $cleaned = strtolower(preg_replace('/[^a-z0-9\s]/i', ' ', $text));
             $words = preg_split('/\s+/', $cleaned);
-
+            
             foreach ($words as $word) {
                 if (strlen($word) < 3 || in_array($word, $stopwords)) {
                     continue;
@@ -635,7 +643,7 @@ class PerformanceController extends Controller
                 $keywords[$word] = ($keywords[$word] ?? 0) + 1;
             }
         }
-
+        
         arsort($keywords);
         
         $result = [];
@@ -644,15 +652,16 @@ class PerformanceController extends Controller
             $result[] = ['term' => $term, 'count' => $count];
             if (++$i >= 30) break;
         }
-
+        
         return $result;
     }
 
     private function marketShare(Request $request)
     {
+        $accountId = $this->getAccountId();
         $filters = $this->buildFilters($request);
         $metric = $request->input('metric', 'mentions');
-
+        
         if ($metric === 'mentions') {
             $sql = "SELECT
                     m.brand_id,
@@ -662,17 +671,19 @@ class PerformanceController extends Controller
                 JOIN responses r ON r.id = m.response_id
                 JOIN runs ON runs.id = r.run_id
                 LEFT JOIN prompts pr ON pr.id = r.prompt_id
-                LEFT JOIN brands b ON b.id = m.brand_id
+                LEFT JOIN brands b ON b.id = m.brand_id AND b.account_id = ?
                 {$filters['where']}
                 GROUP BY m.brand_id, brand_name
                 ORDER BY cnt DESC
                 LIMIT 200";
+            
+            // Add account_id param at beginning
+            array_unshift($filters['params'], $accountId);
+            
         } else {
-            // Citations metric - domains cited in responses about a specific brand
             $brand = $request->input('brand');
             
             if ($brand) {
-                // Get responses where this brand was mentioned
                 $brandResponsesSql = "SELECT DISTINCT m.response_id
                                     FROM mentions m
                                     JOIN responses r ON r.id = m.response_id
@@ -690,7 +701,6 @@ class PerformanceController extends Controller
                 
                 $placeholders = implode(',', array_fill(0, count($responseIds), '?'));
                 
-                // Get domains from ONLY these responses
                 $sql = "SELECT
                             domain,
                             COUNT(DISTINCT response_id) AS cnt
@@ -714,7 +724,6 @@ class PerformanceController extends Controller
                 $results = DB::select($sql, $responseIds);
                 
             } else {
-                // No brand filter - show all domains
                 $sql = "SELECT
                         domain,
                         COUNT(DISTINCT response_id) AS cnt
@@ -741,8 +750,7 @@ class PerformanceController extends Controller
             }
             
             $total = array_sum(array_column($results, 'cnt'));
-
-            // NO brand alias lookup - just use domains directly
+            
             $rows = [];
             foreach ($results as $row) {
                 $cnt = (int) $row->cnt;
@@ -753,13 +761,13 @@ class PerformanceController extends Controller
                     'pct' => $total ? round(100.0 * $cnt / $total, 2) : 0.0,
                 ];
             }
-
+            
             return response()->json(['metric' => $metric, 'total' => $total, 'rows' => $rows]);
         }
-
+        
         $results = DB::select($sql, $filters['params']);
         $total = array_sum(array_column($results, 'cnt'));
-
+        
         $rows = [];
         foreach ($results as $row) {
             $cnt = (int) $row->cnt;
@@ -770,16 +778,17 @@ class PerformanceController extends Controller
                 'pct' => $total ? round(100.0 * $cnt / $total, 2) : 0.0,
             ];
         }
-
+        
         return response()->json(['metric' => $metric, 'total' => $total, 'rows' => $rows]);
     }
 
     private function marketShareTrend(Request $request)
     {
+        $accountId = $this->getAccountId();
         $filters = $this->buildFilters($request);
         $bucketExpr = $this->getBucketExpression($request);
         $metric = $request->input('metric', 'mentions');
-
+        
         $sql = "SELECT
                 {$bucketExpr} AS week_start,
                 m.brand_id,
@@ -789,13 +798,16 @@ class PerformanceController extends Controller
             JOIN responses r ON r.id = m.response_id
             JOIN runs ON runs.id = r.run_id
             LEFT JOIN prompts pr ON pr.id = r.prompt_id
-            LEFT JOIN brands b ON b.id = m.brand_id
+            LEFT JOIN brands b ON b.id = m.brand_id AND b.account_id = ?
             {$filters['where']}
             GROUP BY week_start, m.brand_id, brand_name
             ORDER BY week_start ASC, cnt DESC";
-
+        
+        // Add account_id param at beginning
+        array_unshift($filters['params'], $accountId);
+        
         $results = DB::select($sql, $filters['params']);
-
+        
         $rows = [];
         foreach ($results as $row) {
             $rows[] = [
@@ -805,19 +817,19 @@ class PerformanceController extends Controller
                 'count' => (int) $row->cnt,
             ];
         }
-
+        
         return response()->json(['metric' => $metric, 'rows' => $rows]);
     }
 
     private function marketShareTable(Request $request)
     {
+        $accountId = $this->getAccountId();
         $filters = $this->buildFilters($request);
         $page = max(1, (int) $request->input('page', 1));
         $pageSize = min(100, max(10, (int) $request->input('page_size', 20)));
         $offset = ($page - 1) * $pageSize;
         $metric = $request->input('metric', 'mentions');
-
-        // Main query: Get brand counts for current period
+        
         $sql = "SELECT
                 m.brand_id,
                 COALESCE(b.name, m.brand_id) AS brand_name,
@@ -827,25 +839,30 @@ class PerformanceController extends Controller
             JOIN responses r ON r.id = m.response_id
             JOIN runs ON runs.id = r.run_id
             LEFT JOIN prompts pr ON pr.id = r.prompt_id
-            LEFT JOIN brands b ON b.id = m.brand_id
+            LEFT JOIN brands b ON b.id = m.brand_id AND b.account_id = ?
             {$filters['where']}
             GROUP BY m.brand_id, brand_name
             ORDER BY cnt DESC
             LIMIT $pageSize OFFSET $offset";
-
+        
+        // Add account_id param at beginning
+        array_unshift($filters['params'], $accountId);
+        
         $results = DB::select($sql, $filters['params']);
-
-        // Total brands count
+        
+        // Reset params for count query
+        $filters['params'][0] = $accountId;
+        
         $countSql = "SELECT COUNT(DISTINCT m.brand_id) AS total
                     FROM mentions m
                     JOIN responses r ON r.id = m.response_id
                     JOIN runs ON runs.id = r.run_id
                     LEFT JOIN prompts pr ON pr.id = r.prompt_id
                     {$filters['where']}";
-
-        $totalBrands = (int) DB::select($countSql, $filters['params'])[0]->total;
+        
+        $totalBrands = (int) DB::select($countSql, array_slice($filters['params'], 1))[0]->total;
         $total = array_sum(array_column($results, 'cnt'));
-
+        
         // Get topics per brand
         $brandIds = array_column($results, 'brand_id');
         $topicsByBrand = [];
@@ -867,7 +884,7 @@ class PerformanceController extends Controller
                         GROUP BY m.brand_id, pr.category
                         ORDER BY m.brand_id, cnt DESC";
             
-            $topicsParams = array_merge($filters['params'], $brandIds);
+            $topicsParams = array_merge(array_slice($filters['params'], 1), $brandIds);
             $topicsResults = DB::select($topicsSql, $topicsParams);
             
             foreach ($topicsResults as $tr) {
@@ -877,71 +894,14 @@ class PerformanceController extends Controller
                 $topicsByBrand[$tr->brand_id][] = $tr->topic;
             }
         }
-
-        // Calculate previous period for comparison (same duration, shifted back)
-        $from = $request->input('from');
-        $to = $request->input('to');
-        $prevFrom = null;
-        $prevTo = null;
-        $prevCounts = [];
         
-        if ($from && $to) {
-            try {
-                $fromDate = new \DateTime($from);
-                $toDate = new \DateTime($to);
-                $interval = $fromDate->diff($toDate);
-                
-                $prevToDate = clone $fromDate;
-                $prevToDate->modify('-1 day');
-                $prevFromDate = clone $prevToDate;
-                $prevFromDate->sub($interval);
-                
-                $prevFrom = $prevFromDate->format('Y-m-d');
-                $prevTo = $prevToDate->format('Y-m-d');
-                
-                // Query previous period
-                $prevFilters = $this->buildFiltersWithDates($request, $prevFrom, $prevTo);
-                $prevSql = "SELECT
-                            m.brand_id,
-                            COUNT(DISTINCT m.response_id) AS cnt,
-                            COUNT(DISTINCT r.prompt_id) AS prompts_count
-                        FROM mentions m
-                        JOIN responses r ON r.id = m.response_id
-                        JOIN runs ON runs.id = r.run_id
-                        LEFT JOIN prompts pr ON pr.id = r.prompt_id
-                        {$prevFilters['where']}
-                        GROUP BY m.brand_id";
-                
-                $prevResults = DB::select($prevSql, $prevFilters['params']);
-                
-                foreach ($prevResults as $pr) {
-                    $prevCounts[$pr->brand_id] = [
-                        'cnt' => (int) $pr->cnt,
-                        'prompts' => (int) $pr->prompts_count
-                    ];
-                }
-            } catch (\Exception $e) {
-                // If date parsing fails, skip comparison
-            }
-        }
-
-        // Build final rows
+        // Build rows (simplified - no comparison period for now)
         $rows = [];
         foreach ($results as $i => $row) {
             $brandId = $row->brand_id;
             $cnt = (int) $row->cnt;
             $promptsCount = (int) $row->prompts_count;
-            
             $pct = $total ? round(100.0 * $cnt / $total, 2) : 0.0;
-            
-            // Calculate changes
-            $prevCnt = $prevCounts[$brandId]['cnt'] ?? 0;
-            $prevPrompts = $prevCounts[$brandId]['prompts'] ?? 0;
-            $prevTotal = array_sum(array_column($prevCounts, 'cnt')) ?: 1;
-            $prevPct = $prevTotal ? round(100.0 * $prevCnt / $prevTotal, 2) : 0.0;
-            
-            $changePct = $pct - $prevPct;
-            $changePrompts = $promptsCount - $prevPrompts;
             
             $rows[] = [
                 'rank' => $offset + $i + 1,
@@ -949,16 +909,16 @@ class PerformanceController extends Controller
                 'brand_name' => $row->brand_name,
                 'count' => $cnt,
                 'pct' => $pct,
-                'change_share' => $changePct, // Change in percentage points
-                'delta_pct' => $changePct, // Alias for frontend compatibility
+                'change_share' => 0,
+                'delta_pct' => 0,
                 'prompts_with_mentions' => $promptsCount,
-                'prompts' => $promptsCount, // Alias
-                'change_prompts' => $changePrompts,
+                'prompts' => $promptsCount,
+                'change_prompts' => 0,
                 'topics' => $topicsByBrand[$brandId] ?? [],
-                'mentioned_topics' => implode(', ', array_slice($topicsByBrand[$brandId] ?? [], 0, 5)), // String version
+                'mentioned_topics' => implode(', ', array_slice($topicsByBrand[$brandId] ?? [], 0, 5)),
             ];
         }
-
+        
         return response()->json([
             'metric' => $metric,
             'total_brands' => $totalBrands,
@@ -966,36 +926,28 @@ class PerformanceController extends Controller
             'page' => $page,
             'page_size' => $pageSize,
             'rows' => $rows,
-            'comparison_period' => $prevFrom && $prevTo ? "$prevFrom to $prevTo" : null,
         ]);
     }
 
     private function marketShareTableCitations(Request $request)
     {
         $filters = $this->buildFilters($request);
-        $from = $request->input('from');
-        $to = $request->input('to');
-
-        // Get response IDs in current period
+        
         $sql = "SELECT DISTINCT r.id AS response_id
                 FROM responses r
                 JOIN runs ON runs.id = r.run_id
                 LEFT JOIN prompts pr ON pr.id = r.prompt_id
                 {$filters['where']}";
-
+        
         $responseIds = DB::select($sql, $filters['params']);
         $ids = array_column($responseIds, 'response_id');
-
+        
         if (empty($ids)) {
-            return response()->json([
-                'total' => 0,
-                'rows' => [],
-            ]);
+            return response()->json(['total' => 0, 'rows' => []]);
         }
-
+        
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
-
-        // Get ALL domain citation counts for current period
+        
         $sql = "SELECT
                     domain,
                     COUNT(DISTINCT response_id) AS cnt
@@ -1014,188 +966,35 @@ class PerformanceController extends Controller
                 ) sub
                 GROUP BY domain
                 ORDER BY cnt DESC";
-
+        
         $currentResults = DB::select($sql, $ids);
         $totalCitations = array_sum(array_column($currentResults, 'cnt'));
-
-        // Calculate previous period
-        $prevCounts = [];
-        $prevTotal = 0;
-
-        if ($from && $to) {
-            try {
-                $fromDate = new \DateTime($from);
-                $toDate = new \DateTime($to);
-                $interval = $fromDate->diff($toDate);
-
-                $prevToDate = clone $fromDate;
-                $prevToDate->modify('-1 day');
-                $prevFromDate = clone $prevToDate;
-                $prevFromDate->sub($interval);
-
-                $prevFrom = $prevFromDate->format('Y-m-d');
-                $prevTo = $prevToDate->format('Y-m-d');
-
-                // Build filters for previous period
-                $prevWhere = ['WHERE 1=1'];
-                $prevParams = [];
-
-                $prevWhere[] = 'AND runs.started_at >= ?';
-                $prevParams[] = $prevFrom;
-                $prevWhere[] = 'AND runs.started_at < DATE_ADD(?, INTERVAL 1 DAY)';
-                $prevParams[] = $prevTo;
-
-                $model = $request->input('model');
-                if ($model && $model !== 'all') {
-                    $prevWhere[] = 'AND runs.model = ?';
-                    $prevParams[] = $model;
-                }
-
-                $prevWhereStr = implode(' ', $prevWhere);
-
-                // Get previous period response IDs
-                $prevResponsesSql = "SELECT DISTINCT r.id AS response_id
-                                    FROM responses r
-                                    JOIN runs ON runs.id = r.run_id
-                                    LEFT JOIN prompts pr ON pr.id = r.prompt_id
-                                    $prevWhereStr";
-
-                $prevResponseIds = DB::select($prevResponsesSql, $prevParams);
-                $prevIds = array_column($prevResponseIds, 'response_id');
-
-                if (!empty($prevIds)) {
-                    $prevPlaceholders = implode(',', array_fill(0, count($prevIds), '?'));
-
-                    $prevSql = "SELECT
-                                    domain,
-                                    COUNT(DISTINCT response_id) AS cnt
-                                FROM (
-                                    SELECT DISTINCT
-                                        rl.response_id,
-                                        LOWER(
-                                            CASE
-                                                WHEN SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(rl.url), '://', -1), '/', 1) LIKE 'www.%'
-                                                THEN SUBSTRING(SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(rl.url), '://', -1), '/', 1), 5)
-                                                ELSE SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(rl.url), '://', -1), '/', 1)
-                                            END
-                                        ) AS domain
-                                    FROM response_links rl
-                                    WHERE rl.response_id IN ($prevPlaceholders)
-                                ) sub
-                                GROUP BY domain";
-
-                    $prevResults = DB::select($prevSql, $prevIds);
-
-                    foreach ($prevResults as $pr) {
-                        $prevCounts[$pr->domain] = (int) $pr->cnt;
-                    }
-
-                    $prevTotal = array_sum($prevCounts) ?: 1;
-                }
-            } catch (\Exception $e) {
-                // Skip comparison if date parsing fails
-            }
-        }
-
-        // Get topics for ALL domains
-        $domains = array_column($currentResults, 'domain');
-        $topicsByDomain = [];
-
-        if (!empty($domains)) {
-            $domainPlaceholders = implode(',', array_fill(0, count($domains), '?'));
-            
-            $topicsSql = "SELECT
-                            d.domain,
-                            pr.category AS topic
-                        FROM (
-                            SELECT DISTINCT
-                                rl.response_id,
-                                LOWER(
-                                    CASE
-                                        WHEN SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(rl.url), '://', -1), '/', 1) LIKE 'www.%'
-                                        THEN SUBSTRING(SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(rl.url), '://', -1), '/', 1), 5)
-                                        ELSE SUBSTRING_INDEX(SUBSTRING_INDEX(TRIM(rl.url), '://', -1), '/', 1)
-                                    END
-                                ) AS domain
-                            FROM response_links rl
-                            WHERE rl.response_id IN ($placeholders)
-                        ) d
-                        JOIN responses r ON r.id = d.response_id
-                        LEFT JOIN prompts pr ON pr.id = r.prompt_id
-                        WHERE d.domain IN ($domainPlaceholders)
-                        AND pr.category IS NOT NULL
-                        AND pr.category != ''
-                        GROUP BY d.domain, pr.category";
-
-            $topicsParams = array_merge($ids, $domains);
-            $topicsResults = DB::select($topicsSql, $topicsParams);
-
-            foreach ($topicsResults as $tr) {
-                if (!isset($topicsByDomain[$tr->domain])) {
-                    $topicsByDomain[$tr->domain] = [];
-                }
-                if (!in_array($tr->topic, $topicsByDomain[$tr->domain])) {
-                    $topicsByDomain[$tr->domain][] = $tr->topic;
-                }
-            }
-        }
-
-        // Build ALL rows with comparison data
+        
         $rows = [];
         foreach ($currentResults as $i => $row) {
             $domain = $row->domain;
             $cnt = (int) $row->cnt;
             $pct = $totalCitations ? round(100.0 * $cnt / $totalCitations, 2) : 0.0;
-
-            $prevCnt = $prevCounts[$domain] ?? 0;
-            $prevPct = $prevTotal ? round(100.0 * $prevCnt / $prevTotal, 2) : 0.0;
-            $changePct = $pct - $prevPct;
-            $changeCnt = $cnt - $prevCnt;
-
+            
             $rows[] = [
                 'rank' => $i + 1,
                 'brand_id' => $domain,
                 'brand_name' => $domain,
                 'count' => $cnt,
                 'pct' => $pct,
-                'change_share' => $changePct,
+                'change_share' => 0,
                 'citations' => $cnt,
-                'change_citations' => $changeCnt,
-                'topics' => $topicsByDomain[$domain] ?? [],
-                'mentioned_topics' => implode(', ', array_slice($topicsByDomain[$domain] ?? [], 0, 5)),
+                'change_citations' => 0,
+                'topics' => [],
+                'mentioned_topics' => '',
             ];
         }
-
+        
         return response()->json([
             'total' => $totalCitations,
             'rows' => $rows,
-            'comparison_period' => isset($prevFrom) && isset($prevTo) ? "$prevFrom to $prevTo" : null,
         ]);
     }
-
-    // Build filters with optional custom date range for comparison periods
-    private function buildFiltersWithDates(Request $request, $customFrom = null, $customTo = null)
-    {
-        $where = "WHERE 1=1";
-        $params = [];
-
-        $from = $customFrom ?? $request->input('from');
-        $to = $customTo ?? $request->input('to');
-        $model = $request->input('model');
-
-        if ($from) {
-            $where .= " AND DATE(runs.run_at) >= ?";
-            $params[] = $from;
-        }
-        if ($to) {
-            $where .= " AND DATE(runs.run_at) <= ?";
-            $params[] = $to;
-        }
-        if ($model && $model !== 'all') {
-            $where .= " AND runs.model = ?";
-            $params[] = $model;
-        }
-
-        return ['where' => $where, 'params' => $params];
-    }
 }
+
+    

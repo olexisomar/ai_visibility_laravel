@@ -1,3 +1,18 @@
+// Detect account changes and reload data
+(function() {
+    const currentAccount = '{{ session("account_id") }}';
+    
+    // Store in sessionStorage
+    const storedAccount = sessionStorage.getItem('current_account_id');
+    
+    if (storedAccount && storedAccount !== currentAccount) {      
+        // Force reload all data
+        sessionStorage.clear();
+    }
+    
+    // Update stored account
+    sessionStorage.setItem('current_account_id', currentAccount);
+})();
 // Primary brand context (filled by loadBrands)
 let PRIMARY_BRAND_ID = '';
 let OWNED_HOST = '';
@@ -42,10 +57,18 @@ function getGroupBy(){
   return (v === 'day') ? 'day' : 'week';
 }
 
-function show(view){
-  ['Dashboard','Prompts','Brands','Performance','Config','Automation'].forEach(v=>{
-    $('#tab'+v).classList.toggle('alt', v!==view);
-    $('#view'+v).classList.toggle('hidden', v!==view);
+function show(view) {
+  ['Dashboard', 'Prompts', 'Brands', 'Performance', 'Config', 'Automation', 'Mentions'].forEach(v => {
+    const tab = $('#tab' + v);
+    const viewEl = $('#view' + v);
+    
+    // Only toggle if the element exists
+    if (tab) {
+      tab.classList.toggle('alt', v !== view);
+    }
+    if (viewEl) {
+      viewEl.classList.toggle('hidden', v !== view);
+    }
   });
   
   // Load automation data when tab is opened
@@ -54,12 +77,22 @@ function show(view){
     if (typeof loadRecentRuns === 'function') loadRecentRuns();
   }
 }
-$('#tabDashboard').onclick=()=>show('Dashboard');
-$('#tabPrompts').onclick=()=>show('Prompts');
-$('#tabBrands').onclick=()=>show('Brands');
-$('#tabConfig').onclick=()=>show('Config');
-$('#tabPerformance').onclick=()=>show('Performance');
-$('#tabAutomation').onclick=()=>show('Automation');
+// Safely attach tab handlers
+function attachTabHandler(tabId, tabName) {
+    const tab = $(`#tab${tabName}`);
+    if (tab) {
+        tab.onclick = () => show(tabName);
+    }
+}
+
+// Attach handlers for all possible tabs
+attachTabHandler('tabDashboard', 'Dashboard');
+attachTabHandler('tabPerformance', 'Performance');
+attachTabHandler('tabMentions', 'Mentions');
+attachTabHandler('tabPrompts', 'Prompts');
+attachTabHandler('tabBrands', 'Brands');
+attachTabHandler('tabConfig', 'Config');
+attachTabHandler('tabAutomation', 'Automation');
 
 // ---- Prompts Checkbox selection state ----
 const selectedPrompts = new Set();
@@ -327,10 +360,20 @@ async function fetchMetrics() {
 
     // Missed prompts
     const missed = Array.isArray(j.missed_prompts) ? j.missed_prompts : [];
-    const tb = document.getElementById('missedTable'); tb.innerHTML = '';
-    const priorities = missed.map(m => Number(m.priority || 0));
+    lastMissed = missed.slice();                             // cache full set
+    missedState.total = lastMissed.length;                   // total for pager
+
+    const tb = document.getElementById('missedTable'); 
+    tb.innerHTML = '';
+
+    const start = (missedState.page - 1) * missedState.pageSize;
+    const end   = start + missedState.pageSize;
+    const pageSlice = lastMissed.slice(start, end);
+
+    const priorities = pageSlice.map(m => Number(m.priority || 0));
     const assignBand = makeKMeans3BandAssigner(priorities);
-    missed.forEach(row => {
+
+    pageSlice.forEach(row => {
       const tr = document.createElement('tr');
 
       const tdCat = document.createElement('td');
@@ -354,6 +397,10 @@ async function fetchMetrics() {
       tb.appendChild(tr);
     });
 
+    // refresh the pager after rendering
+    updateMissedPagination();
+
+
     // Optional: show which runs contributed to these KPIs
     if (document.getElementById('runStatus')) {
       const used = (j.run_set || []).map(r => `#${r.id} ${r.model}`).join(' , ');
@@ -368,9 +415,43 @@ async function fetchMetrics() {
     document.getElementById('brandList').innerHTML = '';
     document.getElementById('missedTable').innerHTML = '';
   }
+  updateMissedPagination()
 }
+
+/* ---- Missed Table Pagination Functions ---- */
+function updateMissedPagination() {
+  const pages = Math.max(1, Math.ceil(missedState.total / missedState.pageSize));
+  const info   = document.getElementById('missedPgInfo');
+  const prevBtn= document.getElementById('missedPgPrev');
+  const nextBtn= document.getElementById('missedPgNext');
+  const pager  = document.getElementById('missedPager');
+
+  if (info)   info.textContent = `Page ${missedState.page} / ${pages} — ${missedState.total} item${missedState.total !== 1 ? 's' : ''}`;
+  if (prevBtn) prevBtn.disabled = missedState.page <= 1;
+  if (nextBtn) nextBtn.disabled = missedState.page >= pages;
+  if (pager)   pager.style.display = pages > 1 ? 'flex' : 'none';
+
+}
+
+// Missed pagination controls
+document.getElementById('missedPgPrev')?.addEventListener('click', () => {
+  if (missedState.page > 1) {
+    missedState.page--;
+    fetchMetrics();            // re-render using the slice
+  }
+});
+
+document.getElementById('missedPgNext')?.addEventListener('click', () => {
+  const pages = Math.max(1, Math.ceil(missedState.total / missedState.pageSize));
+  if (missedState.page < pages) {
+    missedState.page++;
+    fetchMetrics();
+  }
+});
+
 // When "All runs" toggles, refresh both KPIs and the mentions table
 document.getElementById('mentionsAll')?.addEventListener('change', () => {
+  missedState.page = 1;
   fetchMetrics();
   loadMentions();
 });
@@ -498,8 +579,12 @@ async function runGoogleAIO() {
   if (typeof loadMentions === 'function') loadMentions();
 }
 
-$('#runBtn').onclick = runSampler;
-$('#runGaiBtn') && ($('#runGaiBtn').onclick = runGoogleAIO);
+// Run buttons (only exist for admins)
+const runBtn = $('#runBtn');
+const runGaiBtn = $('#runGaiBtn');
+
+if (runBtn) runBtn.onclick = runSampler;
+if (runGaiBtn) runGaiBtn.onclick = runGoogleAIO;
 
 /* ---------- PROMPTS CRUD ---------- */
 async function loadPrompts(){
@@ -877,8 +962,11 @@ $('#setPrimaryBtn').onclick = async () => {
   }
 };
 
-// ---- Mentions Pagination State ----
+/* ---- Mentions Pagination State ---- */
 let mentionsState = { page: 1, pageSize: 20, total: 0 };
+/* ---- Missed Pagination State ---- */
+let lastMissed = [];
+let missedState = { page: 1, pageSize: 5, total: 0 };
 
 /* ---------- Mentions (prompt-level) ---------- */
 async function loadMentions() {
@@ -912,14 +1000,13 @@ async function loadMentions() {
   
   const tb = document.getElementById('mentionsTable').querySelector('tbody');
   tb.innerHTML = '';
-  console.log(j.rows.length);
-  
+   
   (j.rows || []).forEach(row => {
     const urlCell = row.url ? `<a href="${encodeURI(row.url)}" target="_blank" rel="noopener noreferrer">${row.url}</a>` : '';
     const anchorCell = (row.anchor || '').toLowerCase();
     const srcLabel = (row.model || '').startsWith('gpt') ? 'GPT' :
                      (row.model === 'google-ai-overview' ? 'AIO' : row.model || '');
-    const imageUrl = srcLabel === 'GPT' ? '/ai-visibility-laravel/public/assets/img/gpt.webp' : '/ai-visibility-laravel/public/assets/img/aiog.webp';
+    const imageUrl = srcLabel === 'GPT' ? '/ai-visibility-company/public/assets/img/gpt.webp' : '/ai-visibility-company/public/assets/img/aiog.webp';
     
     // sentiment chip
     const s = (row.sentiment || '').toLowerCase();
@@ -954,7 +1041,7 @@ async function loadMentions() {
   // Update pagination UI
   updateMentionsPagination();
 }
-
+/* ---- Mations Table Pagination Functions ---- */
 function updateMentionsPagination() {
   const pages = Math.max(1, Math.ceil(mentionsState.total / mentionsState.pageSize));
   
@@ -1025,12 +1112,15 @@ document.getElementById('mentionsReload')?.addEventListener('click', () => {
   loadMentions();
 });
 
+
+
 // small helpers
 function escapeHtml(s){
   return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function openRespModal(html){
   const m = document.getElementById('respModal');
+  
   document.getElementById('respModalBody').innerHTML = html;
   m.classList.remove('hidden');
 }
@@ -1059,12 +1149,43 @@ document.getElementById('mentionsTable').addEventListener('click', async (e)=>{
         </ul>
       </div>`;
   }
-
+  document.getElementById('modalTitle').innerHTML = "Response";
   openRespModal(`
     <div class="resp-ans">${raw}</div>
     ${linksHtml || '<div style="margin-top:10px;color:#aaa">No links extracted for this response.</div>'}
   `);
 });
+// Personas table "View" → show modal with clickable links
+document.getElementById('cfgPersonasTable').addEventListener('click', async (e) => {
+  const pid = e.target?.dataset?.pid;
+  if (!pid) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/admin?action=list_personas`);
+    const j = await res.json();
+
+    // Convert pid to integer explicitly to avoid string subtraction weirdness
+    const perId = parseInt(pid, 10) - 1;
+    if (!j.rows || !j.rows[perId]) {
+      console.warn('Invalid persona ID:', perId);
+      return;
+    }
+
+    // Escape HTML to prevent injection
+    const raw = escapeHtml(j.rows[perId].description || '(empty)');
+    const capName = (j.rows[perId].name || 'Unnamed').toUpperCase();
+
+    document.getElementById('modalTitle').innerHTML = "Persona Description";
+
+    openRespModal(`      
+      <div class="resp-ans"><strong>${capName}</strong></div>
+      <div class="resp-ans">${raw}</div>
+    `);
+  } catch (err) {
+    console.error('Failed to load persona:', err);
+  }
+});
+
 
 // ----- PROMPTS CSV -----
 document.getElementById('promptsExportBtn').onclick = async () => {
@@ -1254,13 +1375,13 @@ document.getElementById('brandsImportBtn').onclick = async () => {
 // Detect base path from current URL
 const getBasePath = () => {
     const path = window.location.pathname;
-    // If we're in /ai-visibility-laravel/public/, use that as base
-    if (path.includes('/ai-visibility-laravel/public/')) {
-        return '/ai-visibility-laravel/public/api/admin';
+    // If we're in /ai-visibility-company/public/, use that as base
+    if (path.includes('/ai-visibility-company/public/')) {
+        return '/ai-visibility-company/public/api/admin';
     }
-    // If we're in /ai-visibility-laravel/, use that as base
-    if (path.includes('/ai-visibility-laravel/')) {
-        return '/ai-visibility-laravel/api/admin';
+    // If we're in /ai-visibility-company/, use that as base
+    if (path.includes('/ai-visibility-company/')) {
+        return '/ai-visibility-company/api/admin';
     }
     // Default for root or localhost:8000
     return '/api/admin';
@@ -1885,13 +2006,13 @@ async function loadPersonasList(){
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${p.id}</td><td>${p.name}</td><td>${p.brand_id??''}</td>
       <td>${p.is_active?1:0}</td><td>${p.updated_at||''}</td>
-      <td>
+      <td style="display:flex;gap:5px;padding:11px;">
         <button class="btn pill-or perDeactBtn ${p.is_active ? '' : 'alt'}"
                 data-act="togglePersona" data-id="${p.id}" data-active="${p.is_active?1:0}">
           ${p.is_active?'Deactivate':'Activate'}
         </button>
         <button class="btn pill-miss" data-act="delPersona" data-id="${p.id}">Delete</button>
-      </td>`;
+      </td><td><button style="background: #E8FFF2" class="btn pill-ok alt" data-pid="${p.id}">View</button></td>`;
     tb.appendChild(tr);
   });
 }

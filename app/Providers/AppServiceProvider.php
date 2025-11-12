@@ -8,6 +8,7 @@ use App\Services\SerpAPIService;
 use App\Services\GSCService;
 use App\Services\BrandTokenService;
 use App\Services\QueryNormalizationService;
+use Illuminate\Support\Facades\URL;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -25,6 +26,11 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        //
+        // Force HTTPS when behind ngrok or proxy
+        if (request()->header('X-Forwarded-Proto') === 'https' || 
+            request()->server('HTTP_X_FORWARDED_PROTO') === 'https' ||
+            env('FORCE_HTTPS', false)) {
+            URL::forceScheme('https');
+        }
     }
 }

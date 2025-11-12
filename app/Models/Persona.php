@@ -6,10 +6,14 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use App\Traits\BelongsToAccount;
 
 class Persona extends Model
 {
+    use BelongsToAccount;
+
     protected $fillable = [
+        'account_id',
         'name',
         'brand_id',
         'description',
@@ -24,7 +28,7 @@ class Persona extends Model
         'is_deleted' => 'boolean',
     ];
 
-    // ========== EXISTING RELATIONSHIPS (UNCHANGED) ==========
+    // ========== EXISTING RELATIONSHIPS ==========
     
     public function brand(): BelongsTo
     {

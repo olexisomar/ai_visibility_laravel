@@ -49,6 +49,7 @@ class RunWeeklyAutomation extends Command
 
         // Create run record
         $run = AutomationRun::create([
+            'account_id' => $settings->account_id,
             'trigger_type' => 'scheduled',
             'source' => $settings->default_source,
             'status' => 'pending',

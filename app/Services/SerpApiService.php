@@ -51,7 +51,7 @@ class SerpAPIService
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 8,
-            CURLOPT_USERAGENT => 'ai-visibility-laravel/1.0',
+            CURLOPT_USERAGENT => 'ai-visibility-company/1.0',
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 2,
             CURLOPT_FAILONERROR => false,

@@ -10,7 +10,7 @@ Private repository - Brand mention monitoring tool.
 4. Run `composer install`
 5. Run `php artisan key:generate`
 6. Run `php artisan migrate`
-7. Access: http://localhost/ai-visibility-laravel/public
+7. Access: http://localhost/ai-visibility-company/public
 
 ## Environment Variables
 

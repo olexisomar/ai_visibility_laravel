@@ -4,9 +4,12 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Traits\BelongsToAccount;
 
 class Brand extends Model
 {
+    use BelongsToAccount;
+
     public $incrementing = false;
     protected $keyType = 'string';
     public $timestamps = false;
@@ -14,6 +17,7 @@ class Brand extends Model
     protected $fillable = [
         'id',
         'name',
+        'account_id',
     ];
 
     public function aliases(): HasMany

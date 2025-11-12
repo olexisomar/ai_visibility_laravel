@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Log;
 use App\Models\AutomationSetting;
 use App\Models\AutomationRun;
 
+// ==================== WEEKLY AUTOMATION CHECK ====================
 // Check automation settings every hour and run if it's time
 Schedule::call(function () {
     Log::info('🔍 Automation check started', [
@@ -21,7 +22,7 @@ Schedule::call(function () {
         Log::info('⏸️  Automation check: Paused');
         return;
     }
-
+    
     // Check if today is the scheduled day
     $dayMap = [
         'sunday' => 0, 'monday' => 1, 'tuesday' => 2, 'wednesday' => 3,
@@ -38,7 +39,7 @@ Schedule::call(function () {
         ]);
         return;
     }
-
+    
     // Check if current time matches scheduled time (within 1 hour window)
     $scheduledTime = \Carbon\Carbon::parse($settings->schedule_time);
     $now = now();
@@ -50,7 +51,7 @@ Schedule::call(function () {
         ]);
         return;
     }
-
+    
     // Check if we already ran today
     $alreadyRanToday = AutomationRun::whereDate('created_at', today())
         ->where('trigger_type', 'scheduled')
@@ -60,7 +61,7 @@ Schedule::call(function () {
         Log::info('⏭️  Automation check: Already ran today');
         return;
     }
-
+    
     // Run automation!
     Log::info('🚀 Triggering weekly automation!', [
         'day' => $settings->schedule_day,
@@ -70,3 +71,16 @@ Schedule::call(function () {
     Artisan::call('automation:run-weekly');
     
 })->hourly()->name('check-automation');
+
+// ==================== STUCK RUN DETECTOR ====================
+// Check for stuck automation runs every 15 minutes
+Schedule::command('automation:check-stuck --timeout=7200')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping()
+    ->name('check-stuck-runs');
+
+// ==================== NOTIFICATION CLEANUP ====================
+// Clean old notifications daily at 2am
+Schedule::command('notifications:clean --days=30')
+    ->dailyAt('02:00')
+    ->name('clean-old-notifications');

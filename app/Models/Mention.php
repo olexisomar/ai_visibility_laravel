@@ -4,12 +4,17 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use App\Traits\BelongsToAccount;
+
 
 class Mention extends Model
 {
+    use BelongsToAccount;
+
     public $timestamps = false;
 
     protected $fillable = [
+        'account_id',
         'response_id',
         'brand_id',
         'found_alias',

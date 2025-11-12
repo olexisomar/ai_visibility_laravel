@@ -5,13 +5,17 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Traits\BelongsToAccount;
 
 class Prompt extends Model
 {
+    use BelongsToAccount;
+
     const UPDATED_AT = 'updated_at';
     const CREATED_AT = null;
 
     protected $fillable = [
+        'account_id',
         'category',
         'persona_id',
         'prompt',
@@ -64,4 +68,5 @@ class Prompt extends Model
     {
         return $query->whereNull('deleted_at');
     }
+    
 }

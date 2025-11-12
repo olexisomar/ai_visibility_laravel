@@ -23,7 +23,7 @@ class MonitoringService
     /**
      * Run monitoring for all approved prompts
      */
-    public function runMonitoring(string $model, float $temp = 0.2, int $offset = 0): array
+    public function runMonitoring(string $model, float $temp = 0.2, int $offset = 0, ?int $accountId = null): array
     {
         $apiKey = env('OPENAI_API_KEY');
         if (!$apiKey) {
@@ -32,6 +32,7 @@ class MonitoringService
 
         // Create run record
         $runId = DB::table('runs')->insertGetId([
+            'account_id' => $accountId ?? session('account_id'),
             'model' => $model,
             'temp' => $temp,
             'status' => 'running',

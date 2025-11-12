@@ -74,7 +74,7 @@ input,select{padding:8px;border:1px solid blue;border-radius:8px}
 
 /* Optional intent mix strip (like the sentiment strip) */
 .intent-strip { margin-top:6px }
-.intent-bar { height:6px; border-radius:4px; overflow:hidden; background:#eee }
+.intent-bar { display:flex;height:6px; border-radius:4px; overflow:hidden; background:#eee }
 .intent-bar span { display:inline-block; height:100% }
 .intent-bar .inf { background:#2f80ed }       /* blue */
 .intent-bar .nav { background:#9b51e0 }       /* purple */
@@ -99,7 +99,7 @@ input,select{padding:8px;border:1px solid blue;border-radius:8px}
 .brand-share-bar span {
   display:block; height:100%; background:#4a90e2; /* neutral blue; adjust if themed */
 }
-.mopps-scroll {max-height: 270px; overflow-y: auto;}
+.mopps-scroll {max-height: 380px; overflow-y: auto;}
 .mopps-scroll thead th {position: sticky; top: 0; background-color: #f0f0f0; z-index: 1; 
 }
 .chip{display:inline-block;padding:2px 8px;border-radius:9999px;border:1px solid #e5e7eb;font-size:12px;font-weight:600}
@@ -321,6 +321,7 @@ input,select{padding:8px;border:1px solid blue;border-radius:8px}
 .table-mentions th:nth-child(2), .table-mentions td:nth-child(2){position: sticky; left: 130px; background:#fff; z-index:3; }
 .table-mentions td[title]{ cursor: help; }
 #mentPgPrev:disabled, #mentPgNext:disabled { opacity: 0.5;cursor: not-allowed; }
+#missedPgPrev:disabled, #missedPgNext:disabled { opacity: 0.5;cursor: not-allowed; }
 
 /* Modal Overlay */
 .budget-modal {
@@ -394,7 +395,12 @@ input,select{padding:8px;border:1px solid blue;border-radius:8px}
   background: #f3f4f6;
   color: #374151;
 }
-
+#cfgPersonasTable {
+  border-collapse: unset;
+}
+#cfgPersonasTable th, td {
+  text-align: center;
+}
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }

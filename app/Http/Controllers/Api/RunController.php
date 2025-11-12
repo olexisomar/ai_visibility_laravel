@@ -72,6 +72,16 @@ class RunController extends Controller
      */
     public function start(Request $request)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        // Check if user can run queries
+        if (!$user->canRunQueries($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - only admins can run queries'
+            ], 403);
+        }
+
         // Increase limits for long-running process
         set_time_limit(600);
         ini_set('max_execution_time', '600');
@@ -137,6 +147,16 @@ class RunController extends Controller
      */
     public function startAIO(Request $request)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        // Check if user can run queries
+        if (!$user->canRunQueries($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - only admins can run queries'
+            ], 403);
+        }
+        
         set_time_limit(600);
         ini_set('max_execution_time', '600');
         ignore_user_abort(true);

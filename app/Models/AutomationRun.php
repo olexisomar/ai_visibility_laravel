@@ -3,10 +3,14 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use App\Traits\BelongsToAccount;
 
 class AutomationRun extends Model
 {
+    use BelongsToAccount;
+    
     protected $fillable = [
+        'account_id',
         'trigger_type',
         'source',
         'status',
@@ -18,7 +22,7 @@ class AutomationRun extends Model
         'duration_seconds',
         'triggered_by',
     ];
-
+    
     protected $casts = [
         'prompts_processed' => 'integer',
         'new_mentions' => 'integer',
@@ -26,7 +30,7 @@ class AutomationRun extends Model
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
     ];
-
+    
     /**
      * Scope: Get recent runs
      */
@@ -34,7 +38,7 @@ class AutomationRun extends Model
     {
         return $query->orderBy('created_at', 'desc')->limit($limit);
     }
-
+    
     /**
      * Scope: Get today's runs
      */
@@ -42,7 +46,7 @@ class AutomationRun extends Model
     {
         return $query->whereDate('created_at', now()->format('Y-m-d'));
     }
-
+    
     /**
      * Mark run as started
      */
@@ -53,13 +57,14 @@ class AutomationRun extends Model
             'started_at' => now(),
         ]);
     }
-
+    
     /**
      * Mark run as completed
      */
     public function markCompleted(int $promptsProcessed, int $newMentions)
     {
-        $duration = $this->started_at ? now()->diffInSeconds($this->started_at) : null;
+        // FIX: Calculate duration correctly (started_at -> now, not now -> started_at)
+        $duration = $this->started_at ? $this->started_at->diffInSeconds(now()) : null;
         
         $this->update([
             'status' => 'completed',
@@ -69,13 +74,14 @@ class AutomationRun extends Model
             'duration_seconds' => $duration,
         ]);
     }
-
+    
     /**
      * Mark run as failed
      */
     public function markFailed(string $errorMessage)
     {
-        $duration = $this->started_at ? now()->diffInSeconds($this->started_at) : null;
+        // FIX: Calculate duration correctly (started_at -> now, not now -> started_at)
+        $duration = $this->started_at ? $this->started_at->diffInSeconds(now()) : null;
         
         $this->update([
             'status' => 'failed',
@@ -84,7 +90,7 @@ class AutomationRun extends Model
             'duration_seconds' => $duration,
         ]);
     }
-
+    
     /**
      * Get status badge color
      */
@@ -97,7 +103,7 @@ class AutomationRun extends Model
             'failed' => 'red',
         };
     }
-
+    
     /**
      * Get formatted duration
      */

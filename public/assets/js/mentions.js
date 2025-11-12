@@ -1,6 +1,4 @@
 
-console.log('Export URL will be:', `${API_BASE}/mentions/export`);
-
 // Toggle export menu
 document.getElementById('exportMenuBtn')?.addEventListener('click', (e) => {
   e.stopPropagation();

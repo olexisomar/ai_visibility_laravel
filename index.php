@@ -1,3 +1,3 @@
 <?php
-header('Location: /ai-visibility-laravel/public/');
+header('Location: /ai-visibility-company/public/');
 exit;

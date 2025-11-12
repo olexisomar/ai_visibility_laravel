@@ -18,7 +18,7 @@ use App\Http\Controllers\Api\AutomationController;
 |--------------------------------------------------------------------------
 */
 
-Route::prefix('admin')->group(function () {
+Route::middleware(['web', 'auth', 'account.scope'])->prefix('admin')->group(function () {
     
     // ==================== BRANDS ====================
     Route::prefix('brands')->name('admin.brands.')->group(function () {
@@ -106,26 +106,64 @@ Route::prefix('admin')->group(function () {
     // ==================== Notifications ====================
     Route::prefix('notifications')->group(function () {
         Route::get('/', function () {
+            $accountId = session('account_id'); // Get current account from session
             $service = app(\App\Services\NotificationService::class);
+            
             return response()->json([
-                'notifications' => $service->getRecent(20),
-                'unread_count' => $service->getUnreadCount(),
+                'notifications' => $service->getRecent(20, $accountId),
+                'unread_count' => $service->getUnreadCount($accountId),
             ]);
         });
         
         Route::post('/{id}/read', function ($id) {
+            $accountId = session('account_id'); // Get current account from session
             $service = app(\App\Services\NotificationService::class);
-            $success = $service->markAsRead($id);
+            
+            $success = $service->markAsRead($id, $accountId);
+            
             return response()->json(['ok' => $success]);
         });
         
         Route::post('/read-all', function () {
+            $accountId = session('account_id'); // Get current account from session
             $service = app(\App\Services\NotificationService::class);
-            $count = $service->markAllAsRead();
+            
+            $count = $service->markAllAsRead($accountId);
+            
             return response()->json(['marked' => $count]);
         });
-    });
 
+        // Delete individual notification
+        Route::delete('/{id}', function ($id) {
+            $accountId = session('account_id');
+            $service = app(\App\Services\NotificationService::class);
+            
+            $success = $service->delete($id, $accountId);
+            
+            return response()->json(['success' => $success]);
+        });
+        
+        // Clear all notifications
+        Route::post('/clear-all', function () {
+            $accountId = session('account_id');
+            $service = app(\App\Services\NotificationService::class);
+            
+            $count = $service->clearAll($accountId);
+            
+            return response()->json(['success' => true, 'count' => $count]);
+        });
+        
+        // Clear read notifications only
+        Route::post('/clear-read', function () {
+            $accountId = session('account_id');
+            $service = app(\App\Services\NotificationService::class);
+            
+            $count = $service->clearRead($accountId);
+            
+            return response()->json(['success' => true, 'count' => $count]);
+        });
+    });
+    
     // Legacy endpoint alias (for the GET /api/admin/gpt call)
     Route::get('/gpt', [RunController::class, 'start'])->name('admin.gpt');
     Route::get('/aio', [RunController::class, 'startAIO'])->name('admin.aio');

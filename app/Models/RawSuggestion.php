@@ -4,13 +4,17 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use App\Traits\BelongsToAccount;
 
 class RawSuggestion extends Model
 {
+    use BelongsToAccount;
+
     const CREATED_AT = 'collected_at';
     const UPDATED_AT = null;
 
     protected $fillable = [
+        'account_id',
         'text',
         'category',
         'persona_id',

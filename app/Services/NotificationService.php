@@ -32,11 +32,12 @@ class NotificationService
             $duration = $this->formatDuration($run->started_at, $run->finished_at);
             
             // Build message
-            $title = "Run #{$runId} Completed";
+            $title = "{$run->model} Run #{$runId} Completed";
             $message = $this->buildRunCompletedMessage($run, $metrics, $duration);
             
             // Save in-app notification
             $notificationId = DB::table('notifications')->insertGetId([
+                'account_id' => $run->account_id,
                 'type' => 'run_completed',
                 'title' => $title,
                 'message' => $message,
@@ -57,6 +58,7 @@ class NotificationService
             Log::info('Run notification sent', [
                 'run_id' => $runId,
                 'notification_id' => $notificationId,
+                'account_id' => $run->account_id,
             ]);
             
         } catch (\Exception $e) {
@@ -193,42 +195,117 @@ HTML;
     /**
      * Get unread notification count
      */
-    public function getUnreadCount(): int
+    public function getUnreadCount(?int $accountId = null): int
     {
-        return DB::table('notifications')
-            ->where('is_read', false)
-            ->count();
+        $query = DB::table('notifications')
+            ->where('is_read', false);
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->count();
     }
     
     /**
      * Get recent notifications
      */
-    public function getRecent(int $limit = 10): array
+    public function getRecent(int $limit = 10, ?int $accountId = null): array
     {
-        return DB::table('notifications')
+        $query = DB::table('notifications')
             ->orderBy('created_at', 'desc')
-            ->limit($limit)
-            ->get()
-            ->toArray();
+            ->limit($limit);
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->get()->toArray();
     }
     
     /**
      * Mark notification as read
      */
-    public function markAsRead(int $id): bool
+    public function markAsRead(int $id, ?int $accountId = null): bool
     {
-        return DB::table('notifications')
-            ->where('id', $id)
-            ->update(['is_read' => true]) > 0;
+        $query = DB::table('notifications')
+            ->where('id', $id);
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->update(['is_read' => true]) > 0;
     }
     
     /**
      * Mark all as read
      */
-    public function markAllAsRead(): int
+    public function markAllAsRead(?int $accountId = null): int
     {
+        $query = DB::table('notifications')
+            ->where('is_read', false);
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->update(['is_read' => true]);
+    }
+
+    /**
+     * Delete a specific notification
+     */
+    public function delete(int $id, ?int $accountId = null): bool
+    {
+        $query = DB::table('notifications')
+            ->where('id', $id);
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->delete() > 0;
+    }
+
+    /**
+     * Clear all notifications for account
+     */
+    public function clearAll(?int $accountId = null): int
+    {
+        $query = DB::table('notifications');
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->delete();
+    }
+
+    /**
+     * Clear only read notifications for account
+     */
+    public function clearRead(?int $accountId = null): int
+    {
+        $query = DB::table('notifications')
+            ->where('is_read', true);
+        
+        if ($accountId) {
+            $query->where('account_id', $accountId);
+        }
+        
+        return $query->delete();
+    }
+
+    /**
+     * Auto-delete old notifications (older than 30 days)
+     */
+    public function deleteOldNotifications(int $daysOld = 30): int
+    {
+        $cutoffDate = now()->subDays($daysOld);
+        
         return DB::table('notifications')
-            ->where('is_read', false)
-            ->update(['is_read' => true]);
+            ->where('created_at', '<', $cutoffDate)
+            ->delete();
     }
 }

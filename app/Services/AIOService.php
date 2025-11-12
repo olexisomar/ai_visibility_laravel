@@ -27,7 +27,8 @@ class AIOService
         string $hl = 'en',
         string $gl = 'us',
         string $location = 'United States',
-        int $offset = 0
+        int $offset = 0,
+        ?int $accountId = null
     ): array {
         $serpApiKey = env('SERPAPI_KEY');
         if (!$serpApiKey) {
@@ -36,6 +37,7 @@ class AIOService
 
         // Create run record
         $runId = DB::table('runs')->insertGetId([
+            'account_id' => $accountId ?? session('account_id'),
             'model' => 'google-ai-overview',
             'temp' => null,
             'status' => 'running',

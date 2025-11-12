@@ -11,8 +11,28 @@ use Illuminate\Support\Facades\Log;
 
 class MentionController extends Controller
 {
+    /**
+     * Get current account ID
+     */
+    private function getAccountId(): int
+    {
+        $accountId = session('account_id');
+        
+        if (!$accountId) {
+            throw new \Exception('No account selected');
+        }
+        
+        return $accountId;
+    }
+
     public function index(Request $request)
     {
+        try {
+            $accountId = $this->getAccountId();
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 403);
+        }
+
         $brand = $request->input('brand');
         $query = $request->input('q');
         $scope = $request->input('scope', 'latest_per_source');
@@ -23,59 +43,68 @@ class MentionController extends Controller
         // Pagination params
         $page = (int) $request->input('page', 1);
         $pageSize = (int) $request->input('page_size', 50);
-        $pageSize = min(max($pageSize, 1), 100); // Clamp between 1-100
-
+        $pageSize = min(max($pageSize, 1), 100);
+        
         $queryBuilder = DB::table('mentions as m')
             ->join('responses as r', 'r.id', '=', 'm.response_id')
             ->join('runs', 'runs.id', '=', 'r.run_id')
-            ->leftJoin('prompts as pr', 'pr.id', '=', 'r.prompt_id');
-
+            ->leftJoin('prompts as pr', 'pr.id', '=', 'r.prompt_id')
+            ->where('r.account_id', $accountId); // ← ACCOUNT SCOPE
+        
         // Apply scope filter
         if ($scope === 'latest') {
-            $latestRunId = DB::table('runs')->max('id');
+            $latestRunId = DB::table('runs')
+                ->where('account_id', $accountId)
+                ->max('id');
             $queryBuilder->where('r.run_id', $latestRunId);
         } elseif ($scope === 'latest_per_source') {
-            $gptRunId = DB::table('runs')->where('model', 'like', 'gpt%')->max('id');
-            $aioRunId = DB::table('runs')->where('model', 'google-ai-overview')->max('id');
+            $gptRunId = DB::table('runs')
+                ->where('account_id', $accountId)
+                ->where('model', 'like', 'gpt%')
+                ->max('id');
+            $aioRunId = DB::table('runs')
+                ->where('account_id', $accountId)
+                ->where('model', 'google-ai-overview')
+                ->max('id');
             $runIds = array_filter([$gptRunId, $aioRunId]);
             if (!empty($runIds)) {
                 $queryBuilder->whereIn('r.run_id', $runIds);
             }
         }
-
+        
         // Brand filter
         if ($brand) {
             $queryBuilder->where('m.brand_id', $brand);
         }
-
+        
         // Search query
         if ($query) {
             $queryBuilder->where(function($q) use ($query) {
                 $q->where('pr.prompt', 'like', "%{$query}%")
-                ->orWhere('r.raw_answer', 'like', "%{$query}%");
+                  ->orWhere('r.raw_answer', 'like', "%{$query}%");
             });
         }
-
+        
         // Model/source filter
         if ($model === 'gpt') {
             $queryBuilder->where('runs.model', 'like', 'gpt%');
         } elseif ($model === 'google-ai-overview') {
             $queryBuilder->where('runs.model', 'google-ai-overview');
         }
-
+        
         // Sentiment filter
         if ($sentiment) {
             $queryBuilder->where('m.sentiment', $sentiment);
         }
-
+        
         // Intent filter
         if ($intent && $intent !== 'all') {
             $queryBuilder->where('r.intent', $intent);
         }
-
+        
         // Get total count BEFORE pagination
         $total = $queryBuilder->count();
-
+        
         // Apply pagination
         $mentions = $queryBuilder
             ->select(
@@ -94,17 +123,18 @@ class MentionController extends Controller
             ->offset(($page - 1) * $pageSize)
             ->limit($pageSize)
             ->get();
-
+        
         // Load links for these responses
         if ($mentions->isNotEmpty()) {
             $responseIds = $mentions->pluck('response_id')->unique()->toArray();
             
             $links = DB::table('response_links')
+                ->where('account_id', $accountId) // ← ACCOUNT SCOPE
                 ->whereIn('response_id', $responseIds)
                 ->orderBy('id')
                 ->get()
                 ->groupBy('response_id');
-
+            
             // Match best link per mention
             $rows = [];
             foreach ($mentions as $mention) {
@@ -112,29 +142,31 @@ class MentionController extends Controller
                 $alias = strtolower($mention->found_alias ?? '');
                 $url = null;
                 $anchor = null;
-
+                $foundIn = null;
+                
                 if (isset($links[$rid])) {
                     foreach ($links[$rid] as $link) {
                         $a = strtolower($link->anchor ?? '');
                         if ($a && $alias && strpos($a, $alias) !== false) {
                             $anchor = $link->anchor;
                             $url = $link->url;
+                            $foundIn = $link->found_in ?? null;
                             break;
                         }
                     }
-
                     if (!$url) {
                         foreach ($links[$rid] as $link) {
                             $u = strtolower($link->url ?? '');
                             if ($alias && strpos($u, $alias) !== false) {
                                 $anchor = $link->anchor;
                                 $url = $link->url;
+                                $foundIn = $link->found_in ?? null;
                                 break;
                             }
                         }
                     }
                 }
-
+                
                 $rows[] = [
                     'response_id' => $mention->response_id,
                     'brand_id' => $mention->brand_id,
@@ -148,9 +180,10 @@ class MentionController extends Controller
                     'snippet' => $mention->snippet,
                     'anchor' => $anchor,
                     'url' => $url,
+                    'found_in' => $foundIn,
                 ];
             }
-
+            
             return response()->json([
                 'rows' => $rows,
                 'total' => $total,
@@ -158,7 +191,7 @@ class MentionController extends Controller
                 'page_size' => $pageSize,
             ]);
         }
-
+        
         return response()->json([
             'rows' => [],
             'total' => 0,
@@ -169,16 +202,26 @@ class MentionController extends Controller
 
     public function show($responseId)
     {
-        $response = Response::findOrFail($responseId);
-        $links = $response->links;
+        try {
+            $accountId = $this->getAccountId();
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 403);
+        }
 
+        // Verify response belongs to account
+        $response = Response::where('id', $responseId)
+            ->where('account_id', $accountId)
+            ->firstOrFail();
+        
+        $links = $response->links;
+        
         return response()->json([
             'response_id' => $response->id,
             'raw_answer' => $response->raw_answer,
             'links' => $links,
         ]);
     }
-    
+
     /**
      * Export mentions to Google Sheets
      */
@@ -196,6 +239,9 @@ class MentionController extends Controller
                     'error' => 'Invalid API key'
                 ], 401);
             }
+
+            $accountId = $this->getAccountId();
+            
             // Get data using same logic as CSV export
             $mentions = $this->getMentionsForExport($request);
             
@@ -233,6 +279,8 @@ class MentionController extends Controller
      */
     private function getMentionsForExport(Request $request)
     {
+        $accountId = $this->getAccountId();
+        
         $scope = $request->get('scope', 'latest_per_source');
         $brandFilter = $request->get('brand');
         $sentimentFilter = $request->get('sentiment');
@@ -245,6 +293,7 @@ class MentionController extends Controller
             ->join('brands as b', 'm.brand_id', '=', 'b.id')
             ->join('prompts as p', 'r.prompt_id', '=', 'p.id')
             ->leftJoin('runs', 'r.run_id', '=', 'runs.id')
+            ->where('r.account_id', $accountId) // ← ACCOUNT SCOPE
             ->select(
                 'r.created_at as date',
                 'runs.model as source',
@@ -268,6 +317,7 @@ class MentionController extends Controller
         
         if ($scope === 'latest_per_source') {
             $latestBySource = DB::table('runs')
+                ->where('account_id', $accountId) // ← ACCOUNT SCOPE
                 ->select('model', DB::raw('MAX(id) as max_id'))
                 ->groupBy('model')
                 ->pluck('max_id');
@@ -326,95 +376,100 @@ class MentionController extends Controller
     public function exportForWindsor(Request $request)
     {
         try {
-        // Validate API key
-        $apiKey = $request->get('api_key');
-        if ($apiKey !== env('API_KEY', 'super-long-random-string')) {
-            return response()->json(['error' => 'Unauthorized'], 401);
-        }
-        
-        $mentions = $this->getMentionsForExport($request);
-        
-        $data = $mentions->map(function($m, $index) {
-            return [
-                // ========== UNIQUE IDENTIFIER ==========
-                'record_id' => 'mention_' . ($m->mention_id ?? $index), 
-                // ========== RECORD TYPE ==========
-                'record_type' => 'mention',
-                // ========== EXISTING CORE FIELDS ==========
-                'date' => $m->date,
-                'source' => $m->source ?? 'Unknown',
-                'brand' => $m->brand,
-                'alias' => $m->alias,
-                'sentiment' => $m->sentiment ?? 'neutral',
-                'intent' => $m->intent ?? 'other',
-                'category' => $m->prompt_category ?? 'uncategorized',
-                'prompt' => substr($m->prompt_text, 0, 200),
-                'answer' => substr($m->answer_snippet, 0, 200),
-                'latency_ms' => (int)$m->latency_ms,
-                'tokens_in' => (int)($m->tokens_in ?? 0),
-                'tokens_out' => (int)($m->tokens_out ?? 0),
-                
-                // ========== BRANDED VS NON-BRANDED ==========
-                'query_brand_type' => $this->getQueryBrandType($m->prompt_text, $m->brand),
-                'query_brand_count' => $this->countBrandsInQuery($m->prompt_text),
-                'is_own_brand_query' => $this->queryContainsBrand($m->prompt_text, $m->brand) ? 1 : 0,
-                'is_competitor_query' => $this->queryContainsCompetitor($m->prompt_text, $m->brand) ? 1 : 0,
-                'is_pure_non_branded' => $this->isPureNonBranded($m->prompt_text) ? 1 : 0,
-                'competitor_in_query' => $this->getCompetitorInQuery($m->prompt_text),
-                
-                // ========== VISIBILITY METRICS ==========
-                'mention_position' => $this->getMentionPosition($m->answer_snippet, $m->alias),
-                'is_first_mention' => $this->isFirstBrand($m->answer_snippet, $m->alias) ? 1 : 0,
-                'is_only_mention' => $this->isOnlyBrand($m->answer_snippet, $m->brand) ? 1 : 0,
-                'mention_count_in_answer' => substr_count(strtolower($m->answer_snippet), strtolower($m->alias)),
-                'competitors_mentioned' => $this->getCompetitorCount($m->answer_snippet),
-                'competitor_list' => $this->getCompetitorList($m->answer_snippet),
-                
-                // ========== COMPETITIVE INTELLIGENCE ==========
-                'vs_draftkings' => $this->isMentionedWith($m->answer_snippet, 'draftkings') ? 1 : 0,
-                'vs_fanduel' => $this->isMentionedWith($m->answer_snippet, 'fanduel') ? 1 : 0,
-                'vs_betonline' => $this->isMentionedWith($m->answer_snippet, 'betonline') ? 1 : 0,
-                
-                // ========== CONTENT QUALITY ==========
-                'has_call_to_action' => $this->hasCallToAction($m->answer_snippet) ? 1 : 0,
-                'has_direct_link' => $this->hasBrandLink($m->answer_snippet, $m->brand) ? 1 : 0,
-                'mention_type' => $this->getMentionType($m->answer_snippet, $m->alias),
-                'answer_length' => strlen($m->answer_snippet),
-                
-                // ========== QUERY INTELLIGENCE ==========
-                'query_type' => $this->classifyQueryType($m->prompt_text),
-                'is_best_query' => str_contains(strtolower($m->prompt_text), 'best') ? 1 : 0,
-                'is_comparison_query' => $this->isComparisonQuery($m->prompt_text) ? 1 : 0,
-                'sport_mentioned' => (string)$this->extractSport($m->prompt_text),
-                'feature_mentioned' => $this->extractFeature($m->prompt_text),
-                
-                // ========== TIME ANALYSIS ==========
-                'month' => \Carbon\Carbon::parse($m->date)->format('Y-m'),
-                'week_of_year' => \Carbon\Carbon::parse($m->date)->weekOfYear,
-                'day_of_week' => \Carbon\Carbon::parse($m->date)->format('l'),
-                'quarter' => 'Q' . \Carbon\Carbon::parse($m->date)->quarter,
-                
-                // ========== BINARY FLAGS FOR EASY FILTERING ==========
-                'is_positive' => ($m->sentiment === 'positive') ? 1 : 0,
-                'is_negative' => ($m->sentiment === 'negative') ? 1 : 0,
-                'is_neutral' => ($m->sentiment === 'neutral') ? 1 : 0,
-                
-                // ========== COMPOSITE SCORE ==========
-                'visibility_score' => $this->calculateVisibilityScore($m),
-
-                // ========== MISSED OPP FIELDS (null for mention records) ==========
-                'search_volume' => null,
-                'opportunity_score' => null,
-            ];
+            // Validate API key
+            $apiKey = $request->get('api_key');
+            if ($apiKey !== env('API_KEY', 'super-long-random-string')) {
+                return response()->json(['error' => 'Unauthorized'], 401);
+            }
+            
+            $accountId = $this->getAccountId();
+            $mentions = $this->getMentionsForExport($request);
+            
+            $data = $mentions->map(function($m, $index) {
+                return [
+                    // ========== UNIQUE IDENTIFIER ==========
+                    'record_id' => 'mention_' . ($m->mention_id ?? $index), 
+                    
+                    // ========== RECORD TYPE ==========
+                    'record_type' => 'mention',
+                    
+                    // ========== EXISTING CORE FIELDS ==========
+                    'date' => $m->date,
+                    'source' => $m->source ?? 'Unknown',
+                    'brand' => $m->brand,
+                    'alias' => $m->alias,
+                    'sentiment' => $m->sentiment ?? 'neutral',
+                    'intent' => $m->intent ?? 'other',
+                    'category' => $m->prompt_category ?? 'uncategorized',
+                    'prompt' => substr($m->prompt_text, 0, 200),
+                    'answer' => substr($m->answer_snippet, 0, 200),
+                    'latency_ms' => (int)$m->latency_ms,
+                    'tokens_in' => (int)($m->tokens_in ?? 0),
+                    'tokens_out' => (int)($m->tokens_out ?? 0),
+                    
+                    // ========== BRANDED VS NON-BRANDED ==========
+                    'query_brand_type' => $this->getQueryBrandType($m->prompt_text, $m->brand),
+                    'query_brand_count' => $this->countBrandsInQuery($m->prompt_text),
+                    'is_own_brand_query' => $this->queryContainsBrand($m->prompt_text, $m->brand) ? 1 : 0,
+                    'is_competitor_query' => $this->queryContainsCompetitor($m->prompt_text, $m->brand) ? 1 : 0,
+                    'is_pure_non_branded' => $this->isPureNonBranded($m->prompt_text) ? 1 : 0,
+                    'competitor_in_query' => $this->getCompetitorInQuery($m->prompt_text),
+                    
+                    // ========== VISIBILITY METRICS ==========
+                    'mention_position' => $this->getMentionPosition($m->answer_snippet, $m->alias),
+                    'is_first_mention' => $this->isFirstBrand($m->answer_snippet, $m->alias) ? 1 : 0,
+                    'is_only_mention' => $this->isOnlyBrand($m->answer_snippet, $m->brand) ? 1 : 0,
+                    'mention_count_in_answer' => substr_count(strtolower($m->answer_snippet), strtolower($m->alias)),
+                    'competitors_mentioned' => $this->getCompetitorCount($m->answer_snippet),
+                    'competitor_list' => $this->getCompetitorList($m->answer_snippet),
+                    
+                    // ========== COMPETITIVE INTELLIGENCE ==========
+                    'vs_draftkings' => $this->isMentionedWith($m->answer_snippet, 'draftkings') ? 1 : 0,
+                    'vs_fanduel' => $this->isMentionedWith($m->answer_snippet, 'fanduel') ? 1 : 0,
+                    'vs_betonline' => $this->isMentionedWith($m->answer_snippet, 'betonline') ? 1 : 0,
+                    
+                    // ========== CONTENT QUALITY ==========
+                    'has_call_to_action' => $this->hasCallToAction($m->answer_snippet) ? 1 : 0,
+                    'has_direct_link' => $this->hasBrandLink($m->answer_snippet, $m->brand) ? 1 : 0,
+                    'mention_type' => $this->getMentionType($m->answer_snippet, $m->alias),
+                    'answer_length' => strlen($m->answer_snippet),
+                    
+                    // ========== QUERY INTELLIGENCE ==========
+                    'query_type' => $this->classifyQueryType($m->prompt_text),
+                    'is_best_query' => str_contains(strtolower($m->prompt_text), 'best') ? 1 : 0,
+                    'is_comparison_query' => $this->isComparisonQuery($m->prompt_text) ? 1 : 0,
+                    'sport_mentioned' => (string)$this->extractSport($m->prompt_text),
+                    'feature_mentioned' => $this->extractFeature($m->prompt_text),
+                    
+                    // ========== TIME ANALYSIS ==========
+                    'month' => \Carbon\Carbon::parse($m->date)->format('Y-m'),
+                    'week_of_year' => \Carbon\Carbon::parse($m->date)->weekOfYear,
+                    'day_of_week' => \Carbon\Carbon::parse($m->date)->format('l'),
+                    'quarter' => 'Q' . \Carbon\Carbon::parse($m->date)->quarter,
+                    
+                    // ========== BINARY FLAGS FOR EASY FILTERING ==========
+                    'is_positive' => ($m->sentiment === 'positive') ? 1 : 0,
+                    'is_negative' => ($m->sentiment === 'negative') ? 1 : 0,
+                    'is_neutral' => ($m->sentiment === 'neutral') ? 1 : 0,
+                    
+                    // ========== COMPOSITE SCORE ==========
+                    'visibility_score' => $this->calculateVisibilityScore($m),
+                    
+                    // ========== MISSED OPP FIELDS (null for mention records) ==========
+                    'search_volume' => null,
+                    'opportunity_score' => null,
+                ];
             })->values()->toArray();
-
-            // ========== ADD MISSED OPPORTUNITIES ==========        
-            // Get your brand ID (adjust to match your actual brand)
-            $yourBrand = DB::table('brands')->where('name', 'BetUS')->first();
+            
+            // ========== ADD MISSED OPPORTUNITIES ==========
+            $yourBrand = DB::table('brands')
+                ->where('account_id', $accountId) // ← ACCOUNT SCOPE
+                ->where('name', 'BetUS')
+                ->first();
+            
             $brandId = $yourBrand ? $yourBrand->id : null;
             
             if ($brandId) {
-                // Build filters from request
                 $startDate = $request->get('start_date');
                 $endDate = $request->get('end_date');
                 $source = $request->get('source');
@@ -446,34 +501,26 @@ class MentionController extends Controller
                 // Transform missed opps to match data structure
                 $missedOppsData = array_map(function($opp, $index) use ($yourBrand) {
                     return [
-                        // ========== UNIQUE IDENTIFIER ==========
                         'record_id' => 'missed_' . ($opp['prompt_id'] ?? $index),
-                        // ========== RECORD TYPE ==========
-                        'record_type' => 'missed_opportunity', // Identifies this as missed opp
-                        
-                        // ========== COMMON FIELDS ==========
-                        'date' => now()->format('Y-m-d H:i:s'), // Use current date or extract from responses
-                        'source' => 'All', // Missed opps span multiple sources
-                        'brand' => $yourBrand->name, // Not mentioned
+                        'record_type' => 'missed_opportunity',
+                        'date' => now()->format('Y-m-d H:i:s'),
+                        'source' => 'All',
+                        'brand' => $yourBrand->name,
                         'alias' => strtolower($yourBrand->name),
                         'sentiment' => null,
                         'intent' => $opp['intent'] ?? 'other',
                         'category' => $opp['category'],
                         'prompt' => $opp['prompt'],
-                        'answer' => null, // No answer to show
+                        'answer' => null,
                         'latency_ms' => null,
                         'tokens_in' => null,
                         'tokens_out' => null,
-                        
-                        // ========== QUERY ANALYSIS ==========
                         'query_brand_type' => $this->getQueryBrandType($opp['prompt'], 'BetUS'),
                         'query_brand_count' => $this->countBrandsInQuery($opp['prompt']),
                         'is_own_brand_query' => $this->queryContainsBrand($opp['prompt'], 'BetUS') ? 1 : 0,
                         'is_competitor_query' => $this->queryContainsCompetitor($opp['prompt'], 'BetUS') ? 1 : 0,
                         'is_pure_non_branded' => $this->isPureNonBranded($opp['prompt']) ? 1 : 0,
                         'competitor_in_query' => $this->getCompetitorInQuery($opp['prompt']),
-                        
-                        // ========== VISIBILITY FIELDS (null for missed opps) ==========
                         'mention_position' => null,
                         'is_first_mention' => 0,
                         'is_only_mention' => 0,
@@ -487,37 +534,25 @@ class MentionController extends Controller
                         'has_direct_link' => 0,
                         'mention_type' => null,
                         'answer_length' => null,
-                        
-                        // ========== QUERY TYPE ==========
                         'query_type' => $this->classifyQueryType($opp['prompt']),
                         'is_best_query' => str_contains(strtolower($opp['prompt']), 'best') ? 1 : 0,
                         'is_comparison_query' => $this->isComparisonQuery($opp['prompt']) ? 1 : 0,
                         'sport_mentioned' => $this->extractSport($opp['prompt']),
                         'feature_mentioned' => $this->extractFeature($opp['prompt']),
-                        
-                        // ========== TIME FIELDS ==========
                         'month' => now()->format('Y-m'),
                         'week_of_year' => now()->weekOfYear,
                         'day_of_week' => now()->format('l'),
                         'quarter' => 'Q' . now()->quarter,
-                        
-                        // ========== SENTIMENT FLAGS (all null) ==========
                         'is_positive' => 0,
                         'is_negative' => 0,
                         'is_neutral' => 0,
-                        'visibility_score' => 0, // Missed = 0 score
-                        
-                        // ========== MISSED OPP SPECIFIC FIELDS ==========
+                        'visibility_score' => 0,
                         'search_volume' => $opp['search_volume'] ?? 0,
                         'opportunity_score' => $opp['priority'] ?? 50,
                     ];
                 }, $missedOpps, array_keys($missedOpps));
                 
-                // ========== COMBINE BOTH DATASETS ==========
                 $data = array_merge($data, $missedOppsData);
-            } else {
-                // No brand found, just return mentions
-                $data = $data;
             }
             
             return response()->json($data)
@@ -539,12 +574,9 @@ class MentionController extends Controller
     }
 
     // ========================================
-    // BRANDED VS NON-BRANDED ANALYSIS
+    // ANALYSIS HELPER METHODS (keep all existing ones)
     // ========================================
-
-    /**
-     * Get list of all competitor brands
-     */
+    
     private function getAllBrands(): array
     {
         return [
@@ -554,9 +586,6 @@ class MentionController extends Controller
         ];
     }
 
-    /**
-     * Determine query brand type
-     */
     private function getQueryBrandType(string $prompt, string $mentionedBrand): string
     {
         $prompt = strtolower($prompt);
@@ -594,9 +623,6 @@ class MentionController extends Controller
         return 'unknown';
     }
 
-    /**
-     * Count how many brands in query
-     */
     private function countBrandsInQuery(string $prompt): int
     {
         $allBrands = $this->getAllBrands();
@@ -611,17 +637,11 @@ class MentionController extends Controller
         return $count;
     }
 
-    /**
-     * Check if query contains own brand
-     */
     private function queryContainsBrand(string $prompt, string $brand): bool
     {
         return str_contains(strtolower($prompt), strtolower($brand));
     }
 
-    /**
-     * Check if query contains any competitor
-     */
     private function queryContainsCompetitor(string $prompt, string $ownBrand): bool
     {
         $allBrands = $this->getAllBrands();
@@ -636,9 +656,6 @@ class MentionController extends Controller
         return false;
     }
 
-    /**
-     * Check if query is pure non-branded
-     */
     private function isPureNonBranded(string $prompt): bool
     {
         $allBrands = $this->getAllBrands();
@@ -652,9 +669,6 @@ class MentionController extends Controller
         return true;
     }
 
-    /**
-     * Get competitor name from query (if any)
-     */
     private function getCompetitorInQuery(string $prompt): ?string
     {
         $competitors = ['draftkings', 'fanduel', 'betonline', 'bovada', 
@@ -669,13 +683,6 @@ class MentionController extends Controller
         return null;
     }
 
-    // ========================================
-    // VISIBILITY METRICS
-    // ========================================
-
-    /**
-     * Get position of brand mention (1st, 2nd, 3rd, etc.)
-     */
     private function getMentionPosition(string $text, string $alias): int
     {
         $brands = $this->getAllBrands();
@@ -696,17 +703,11 @@ class MentionController extends Controller
         return $key !== false ? $key + 1 : 0;
     }
 
-    /**
-     * Check if brand is first mentioned
-     */
     private function isFirstBrand(string $text, string $alias): bool
     {
         return $this->getMentionPosition($text, $alias) === 1;
     }
 
-    /**
-     * Check if brand is only one mentioned
-     */
     private function isOnlyBrand(string $text, string $brand): bool
     {
         $allBrands = $this->getAllBrands();
@@ -721,9 +722,6 @@ class MentionController extends Controller
         return $count === 1;
     }
 
-    /**
-     * Count competitors mentioned in answer
-     */
     private function getCompetitorCount(string $text): int
     {
         $competitors = ['draftkings', 'fanduel', 'betonline', 'bovada', 
@@ -739,9 +737,6 @@ class MentionController extends Controller
         return $count;
     }
 
-    /**
-     * Get list of competitors mentioned
-     */
     private function getCompetitorList(string $text): string
     {
         $competitors = ['DraftKings', 'FanDuel', 'BetOnline', 'Bovada', 
@@ -757,21 +752,11 @@ class MentionController extends Controller
         return implode(', ', $found) ?: 'None';
     }
 
-    /**
-     * Check if mentioned alongside specific competitor
-     */
     private function isMentionedWith(string $text, string $competitor): bool
     {
         return stripos($text, $competitor) !== false;
     }
 
-    // ========================================
-    // CONTENT QUALITY
-    // ========================================
-
-    /**
-     * Check if answer has call to action
-     */
     private function hasCallToAction(string $text): bool
     {
         $ctas = ['visit', 'sign up', 'try', 'check out', 'register', 
@@ -788,29 +773,20 @@ class MentionController extends Controller
         return false;
     }
 
-    /**
-     * Check if answer has direct link to brand
-     */
     private function hasBrandLink(string $text, string $brand): bool
     {
-        // Convert brand name to domain format
         $brandDomain = strtolower(str_replace([' ', '.'], '', $brand));
         $text = strtolower($text);
         
-        // Check for common domain patterns
         return str_contains($text, $brandDomain . '.com') || 
-            str_contains($text, $brandDomain . '.pa') ||
-            str_contains($text, $brandDomain . '.ag');
+               str_contains($text, $brandDomain . '.pa') ||
+               str_contains($text, $brandDomain . '.ag');
     }
 
-    /**
-     * Classify mention type
-     */
     private function getMentionType(string $text, string $alias): string
     {
         $text = strtolower($text);
         
-        // Check for recommendation keywords
         $recommendations = ['recommend', 'best', 'top choice', 'great option', 'try', 'consider'];
         foreach ($recommendations as $rec) {
             if (str_contains($text, $rec)) {
@@ -818,7 +794,6 @@ class MentionController extends Controller
             }
         }
         
-        // Check for comparison keywords
         $comparisons = ['vs', 'versus', 'compared to', 'better than'];
         foreach ($comparisons as $comp) {
             if (str_contains($text, $comp)) {
@@ -826,7 +801,6 @@ class MentionController extends Controller
             }
         }
         
-        // Check for warnings
         $warnings = ['warning', 'caution', 'avoid', 'careful', 'risk'];
         foreach ($warnings as $warn) {
             if (str_contains($text, $warn)) {
@@ -837,47 +811,34 @@ class MentionController extends Controller
         return 'factual';
     }
 
-    // ========================================
-    // QUERY INTELLIGENCE
-    // ========================================
-
-    /**
-     * Classify query type
-     */
     private function classifyQueryType(string $prompt): string
     {
         $prompt = strtolower($prompt);
         
         if (str_contains($prompt, 'best')) return 'best';
         
-        // Check for comparison keywords
         if (str_contains($prompt, 'vs') || str_contains($prompt, 'versus') || str_contains($prompt, 'compare')) {
             return 'comparison';
         }
         
-        // Check for review keywords
         if (str_contains($prompt, 'review') || str_contains($prompt, 'opinion')) {
             return 'review';
         }
         
-        // Check for how-to keywords
         if (str_contains($prompt, 'how to') || str_contains($prompt, 'guide') || str_contains($prompt, 'tutorial')) {
             return 'how-to';
         }
         
-        // Check for promotion keywords
         if (str_contains($prompt, 'bonus') || str_contains($prompt, 'promo') || 
             str_contains($prompt, 'offer') || str_contains($prompt, 'free')) {
             return 'promotion';
         }
         
-        // Check for trust keywords
         if (str_contains($prompt, 'safe') || str_contains($prompt, 'legal') || 
             str_contains($prompt, 'legit') || str_contains($prompt, 'trust')) {
             return 'trust';
         }
         
-        // Check for signup keywords
         if (str_contains($prompt, 'sign up') || str_contains($prompt, 'register') || 
             str_contains($prompt, 'create account')) {
             return 'signup';
@@ -886,29 +847,22 @@ class MentionController extends Controller
         return 'general';
     }
 
-    /**
-     * Check if comparison query
-     */
     private function isComparisonQuery(string $prompt): bool
     {
         $prompt = strtolower($prompt);
         
         return str_contains($prompt, 'vs') || 
-            str_contains($prompt, 'versus') || 
-            str_contains($prompt, 'compare') || 
-            str_contains($prompt, 'comparison') || 
-            str_contains($prompt, ' or ') || 
-            str_contains($prompt, 'better');
+               str_contains($prompt, 'versus') || 
+               str_contains($prompt, 'compare') || 
+               str_contains($prompt, 'comparison') || 
+               str_contains($prompt, ' or ') || 
+               str_contains($prompt, 'better');
     }
 
-    /**
-     * Extract sport from prompt
-     */
     private function extractSport(string $prompt): ?string
     {
         $prompt = strtolower($prompt);
         
-        // More comprehensive sport detection
         $sports = [
             'NFL' => ['nfl', 'football', 'super bowl', 'gridiron'],
             'NBA' => ['nba', 'basketball', 'hoops'],
@@ -924,21 +878,17 @@ class MentionController extends Controller
             'College Basketball' => ['college basketball', 'march madness', 'ncaa basketball'],
         ];
         
-        // Check each sport
         foreach ($sports as $sportName => $keywords) {
             foreach ($keywords as $keyword) {
                 if (str_contains($prompt, $keyword)) {
-                    return $sportName; // Return the readable name, not a number
+                    return $sportName;
                 }
             }
         }
         
-        return 'Others'; // No sport detected
+        return 'Others';
     }
 
-    /**
-     * Extract feature from prompt
-     */
     private function extractFeature(string $prompt): ?string
     {
         $features = [
@@ -963,47 +913,33 @@ class MentionController extends Controller
         return 'Others';
     }
 
-    // ========================================
-    // VISIBILITY SCORE
-    // ========================================
-
-    /**
-     * Calculate composite visibility score
-     */
     private function calculateVisibilityScore($m): int
     {
         $score = 0;
         
-        // Base: Got mentioned = 10 points
         $score += 10;
         
-        // Query type bonus
         if ($this->isPureNonBranded($m->prompt_text)) {
-            $score += 25; // Non-branded is most valuable
+            $score += 25;
         } elseif ($this->queryContainsBrand($m->prompt_text, $m->brand)) {
-            $score += 5; // Own brand query
+            $score += 5;
         }
-        
-        // Position bonus
         if ($this->isFirstBrand($m->answer_snippet, $m->alias)) {
             $score += 20;
         } elseif ($this->getMentionPosition($m->answer_snippet, $m->alias) === 2) {
             $score += 10;
         }
         
-        // Exclusivity bonus
         if ($this->isOnlyBrand($m->answer_snippet, $m->brand)) {
             $score += 30;
         }
         
-        // Sentiment impact
         if ($m->sentiment === 'positive') {
             $score += 15;
         } elseif ($m->sentiment === 'negative') {
             $score -= 20;
         }
         
-        // Content quality bonus
         if ($this->hasCallToAction($m->answer_snippet)) {
             $score += 10;
         }
@@ -1012,14 +948,12 @@ class MentionController extends Controller
             $score += 10;
         }
         
-        // Intent bonus
         if ($m->intent === 'transactional') {
-            $score += 15; // High conversion intent
+            $score += 15;
         } elseif ($m->intent === 'informational') {
-            $score += 5; // Brand building
+            $score += 5;
         }
         
-        // Mention type
         if ($this->getMentionType($m->answer_snippet, $m->alias) === 'recommendation') {
             $score += 20;
         } elseif ($this->getMentionType($m->answer_snippet, $m->alias) === 'warning') {
@@ -1028,5 +962,4 @@ class MentionController extends Controller
         
         return max(0, $score);
     }
-
 }

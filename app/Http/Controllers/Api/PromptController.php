@@ -70,6 +70,15 @@ class PromptController extends Controller
 
     public function store(Request $request)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        if (!$user->canManageContent($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - viewers cannot create prompts'
+            ], 403);
+        }
+    
         $data = $request->all();
         $id = isset($data['id']) ? (int)$data['id'] : null;
         
@@ -138,6 +147,15 @@ class PromptController extends Controller
 
     public function destroy($id)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        if (!$user->canManageContent($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - viewers cannot delete prompts'
+            ], 403);
+        }
+
         try {
             $updated = DB::table('prompts')
                 ->where('id', $id)
@@ -156,6 +174,15 @@ class PromptController extends Controller
 
     public function togglePause(Request $request, $id)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        if (!$user->canManageContent($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - viewers cannot modify prompts'
+            ], 403);
+        }
+
         $isPaused = $request->input('is_paused', 1);
         
         try {

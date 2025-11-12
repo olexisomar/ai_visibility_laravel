@@ -3,10 +3,14 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use App\Traits\BelongsToAccount;
 
 class AutomationSetting extends Model
 {
+    use BelongsToAccount;
+
     protected $fillable = [
+        'account_id',
         'schedule',
         'default_source',
         'schedule_day',
@@ -20,6 +24,27 @@ class AutomationSetting extends Model
         'notifications_enabled' => 'boolean',
         'max_runs_per_day' => 'integer',
     ];
+
+    /**
+     * Get settings for current account (or create if missing)
+     */
+    public static function getCurrentOrCreate()
+    {
+        $accountId = session('account_id');
+        
+        return self::firstOrCreate(
+            ['account_id' => $accountId],
+            [
+                'schedule' => 'weekly',
+                'default_source' => 'all',
+                'schedule_day' => 'monday',
+                'schedule_time' => '09:00',
+                'max_runs_per_day' => 10,
+                'notifications_enabled' => false,
+                'notification_email' => null,
+            ]
+        );
+    }
 
     /**
      * Get the singleton settings record

@@ -8,31 +8,67 @@ use App\Models\BrandAlias;
 use App\Models\Setting;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class BrandController extends Controller
 {
     public function index()
     {
-        $brands = Brand::with('aliases')->orderBy('name')->get();
-        $primaryBrandId = Setting::get('primary_brand_id');
+        try {
+            log::info('BrandController::index', [
+                'account_id' => session('account_id'),
+                'user' => auth()->id(),
+            ]);
 
-        // Format brands for frontend
-        $formattedBrands = $brands->map(function ($brand) {
-            return [
-                'id' => $brand->id,
-                'name' => $brand->name,
-                'aliases' => $brand->aliases->pluck('alias')->toArray(), // ← Convert to array of strings
-            ];
-        });
+            // Get brands with aliases for current account (auto-scoped by BelongsToAccount trait)
+            $brands = Brand::with('aliases')->orderBy('name')->get();
 
-        return response()->json([
-            'brands' => $formattedBrands,
-            'primary_brand_id' => $primaryBrandId,
-        ]);
+            log::info('Brands loaded', ['count' => $brands->count()]);
+
+            // Get primary brand ID for current account
+            $accountId = session('account_id');
+            
+            $primaryBrandId = DB::table('settings')
+                ->where('account_id', $accountId)
+                ->where('key', 'primary_brand_id')
+                ->value('value');
+
+            // Format brands for frontend
+            $formattedBrands = $brands->map(function ($brand) {
+                return [
+                    'id' => $brand->id,
+                    'name' => $brand->name,
+                    'aliases' => $brand->aliases->pluck('alias')->toArray(),
+                ];
+            });
+
+            return response()->json([
+                'brands' => $formattedBrands,
+                'primary_brand_id' => $primaryBrandId,
+            ]);
+            
+        } catch (\Exception $e) {
+            log::error('BrandController error: ' . $e->getMessage());
+            log::error($e->getTraceAsString());
+            
+            return response()->json([
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ], 500);
+        }
     }
 
     public function store(Request $request)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        if (!$user->canManageContent($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - viewers cannot create brands'
+            ], 403);
+        }
+
         $validated = $request->validate([
             'id' => 'required|string|max:100',
             'name' => 'required|string|max:255',
@@ -42,20 +78,42 @@ class BrandController extends Controller
 
         DB::beginTransaction();
         try {
+            $accountId = session('account_id');
+            
+            if (!$accountId) {
+                return response()->json(['error' => 'No account selected'], 403);
+            }
+
+            Log::info('Brand store called', [
+                'account_id' => $accountId,
+                'brand_id' => $validated['id'],
+            ]);
+
+            // Create or update brand WITH account_id
             $brand = Brand::updateOrCreate(
-                ['id' => $validated['id']],
-                ['name' => $validated['name']]
+                [
+                    'id' => $validated['id'],
+                    'account_id' => $accountId, // ← CRITICAL: Include account_id in WHERE
+                ],
+                [
+                    'name' => $validated['name'],
+                    'account_id' => $accountId, // ← CRITICAL: Set account_id in UPDATE
+                ]
             );
 
-            // Replace aliases
-            BrandAlias::where('brand_id', $brand->id)->delete();
+            // Delete old aliases for THIS brand in THIS account
+            BrandAlias::where('brand_id', $brand->id)
+                ->where('account_id', $accountId) // ← CRITICAL: Scope to account
+                ->delete();
             
+            // Create new aliases
             if (!empty($validated['aliases'])) {
                 foreach ($validated['aliases'] as $alias) {
                     if (trim($alias)) {
                         BrandAlias::create([
                             'brand_id' => $brand->id,
                             'alias' => trim($alias),
+                            'account_id' => $accountId, // ← CRITICAL: Set account_id
                         ]);
                     }
                 }
@@ -63,15 +121,31 @@ class BrandController extends Controller
 
             DB::commit();
 
-            return response()->json(['ok' => true]);
+            Log::info('Brand saved successfully', [
+                'brand_id' => $brand->id,
+                'brand_account_id' => $brand->account_id,
+            ]);
+
+            return response()->json(['ok' => true, 'brand' => $brand]);
+            
         } catch (\Exception $e) {
             DB::rollBack();
+            Log::error('Brand store error: ' . $e->getMessage());
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
     public function destroy($id)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        if (!$user->canManageContent($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - viewers cannot modify brands'
+            ], 403);
+        }
+
         try {
             // Normalize brand ID
             $id = $this->normalizeBrandId($id);
@@ -94,36 +168,59 @@ class BrandController extends Controller
             
             return response()->json(['ok' => true]);
         } catch (\Exception $e) {
-            Log::error('Brand delete error: ' . $e->getMessage());
+            log::error('Brand delete error: ' . $e->getMessage());
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
     public function setPrimary(Request $request)
     {
-        $validated = $request->validate([
-            'id' => 'required|string',
-        ]);
-        
         try {
-            $id = $this->normalizeBrandId($validated['id']);
+            $validated = $request->validate([
+                'id' => 'required|string',
+            ]);
             
-            // Verify brand exists
-            $exists = DB::table('brands')->where('id', $id)->exists();
+            $brandId = $validated['id'];
+            $accountId = session('account_id');
             
-            if (!$exists) {
+            if (!$accountId) {
+                return response()->json(['error' => 'No account selected'], 403);
+            }
+            
+            Log::info('setPrimary called', [
+                'brand_id' => $brandId,
+                'account_id' => $accountId,
+            ]);
+            
+            // Verify brand belongs to account
+            $brand = Brand::where('id', $brandId)->first();
+            if (!$brand) {
                 return response()->json(['error' => 'Brand not found'], 404);
             }
             
-            // Set as primary
-            DB::table('settings')->updateOrInsert(
-                ['key' => 'primary_brand_id'],
-                ['value' => $id]
-            );
+            // DELETE old primary for this account
+            DB::table('settings')
+                ->where('account_id', $accountId)
+                ->where('key', 'primary_brand_id')
+                ->delete();
             
-            return response()->json(['ok' => true, 'id' => $id]);
+            // INSERT new primary (EXPLICITLY set account_id)
+            DB::table('settings')->insert([
+                'account_id' => $accountId,  // EXPLICIT
+                'key' => 'primary_brand_id',
+                'value' => $brandId,
+            ]);
+            
+            Log::info('Primary brand set', [
+                'account_id' => $accountId,
+                'brand_id' => $brandId,
+            ]);
+            
+            return response()->json(['ok' => true, 'id' => $brandId]);
+            
         } catch (\Exception $e) {
-            Log::error('Set primary brand error: ' . $e->getMessage());
+            Log::error('setPrimary error: ' . $e->getMessage());
+            Log::error($e->getTraceAsString());
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
@@ -173,6 +270,15 @@ class BrandController extends Controller
 
     public function import(Request $request)
     {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        if (!$user->canManageContent($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - viewers cannot modify brands'
+            ], 403);
+        }
+        
         $request->validate([
             'file' => 'required|file|mimes:csv,txt',
             'replace' => 'nullable|boolean',

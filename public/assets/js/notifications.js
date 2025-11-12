@@ -1,3 +1,7 @@
+// small helpers
+function escapeHtml(s){
+  return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 /**
  * Notifications System
  */
@@ -65,30 +69,42 @@ function renderNotifications(notifications) {
         const time = formatNotificationTime(n.created_at);
         
         return `
-            <div class="notification-item" data-id="${n.id}" style="
+            <div class="notification-item" data-notification-id="${n.id}" style="
                 padding: 16px;
                 border-bottom: 1px solid #e5e7eb;
-                cursor: pointer;
                 background: ${bgColor};
                 transition: background 0.2s;
+                display: flex;
+                gap: 12px;
+                align-items: start;
             " onmouseover="this.style.background='#f9fafb'" 
-               onmouseout="this.style.background='${bgColor}'"
-               onclick="markNotificationRead(${n.id})">
-                <div style="display: flex; gap: 12px;">
-                    <div style="font-size: 24px;">${icon}</div>
-                    <div style="flex: 1;">
-                        <div style="font-weight: ${isUnread ? '600' : '400'}; margin-bottom: 4px;">
-                            ${escapeHtml(n.title)}
-                        </div>
-                        <div style="font-size: 13px; color: #6b7280; white-space: pre-wrap;">
-                            ${escapeHtml(n.message)}
-                        </div>
-                        <div style="font-size: 11px; color: #9ca3af; margin-top: 8px;">
-                            ${time}
-                        </div>
+               onmouseout="this.style.background='${bgColor}'">
+                <div style="font-size: 24px;">${icon}</div>
+                <div style="flex: 1; min-width: 0; cursor: pointer;" onclick="markNotificationRead(${n.id})">
+                    <div style="font-weight: ${isUnread ? '600' : '400'}; margin-bottom: 4px;">
+                        ${escapeHtml(n.title)}
                     </div>
-                    ${isUnread ? '<div style="width: 8px; height: 8px; background: #3b82f6; border-radius: 50%;"></div>' : ''}
+                    <div style="font-size: 13px; color: #6b7280; white-space: pre-wrap;">
+                        ${escapeHtml(n.message)}
+                    </div>
+                    <div style="font-size: 11px; color: #9ca3af; margin-top: 8px;">
+                        ${time}
+                    </div>
                 </div>
+                ${isUnread ? '<div style="width: 8px; height: 8px; background: #3b82f6; border-radius: 50%; margin-top: 4px;"></div>' : ''}
+                <button onclick="event.stopPropagation(); deleteNotification(${n.id});" style="
+                    background: none;
+                    border: none;
+                    color: #9ca3af;
+                    cursor: pointer;
+                    padding: 4px 8px;
+                    font-size: 18px;
+                    line-height: 1;
+                    transition: color 0.2s;
+                    flex-shrink: 0;
+                " onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#9ca3af'" title="Delete notification">
+                    ×
+                </button>
             </div>
         `;
     }).join('');
@@ -233,9 +249,107 @@ function initNotifications() {
     // Load initial count
     loadNotifications();
     
-    // Poll for new notifications every 30 seconds
-    setInterval(loadNotifications, 30000);
+    // Poll for new notifications every 5 minutes
+    setInterval(loadNotifications, 300000);
 }
+
+// Delete individual notification
+async function deleteNotification(notificationId) {
+    try {
+        const response = await fetch(`/ai-visibility-company/public/api/admin/notifications/${notificationId}`, {
+            method: 'DELETE',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Remove from UI
+            const notificationElement = document.querySelector(`[data-notification-id="${notificationId}"]`);
+            if (notificationElement) {
+                notificationElement.remove();
+            }
+            
+            // Reload notifications
+            loadNotifications();
+        }
+    } catch (error) {
+        console.error('Failed to delete notification:', error);
+    }
+}
+
+// Clear all notifications
+async function clearAllNotifications() {
+    if (!confirm('Clear all notifications? This cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/ai-visibility-company/public/api/admin/notifications/clear-all', {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            loadNotifications();
+        }
+    } catch (error) {
+        console.error('Failed to clear notifications:', error);
+    }
+}
+
+// Clear read notifications only
+async function clearReadNotifications() {
+    if (!confirm('Clear all read notifications?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/ai-visibility-company/public/api/admin/notifications/clear-read', {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            loadNotifications();
+        }
+    } catch (error) {
+        console.error('Failed to clear read notifications:', error);
+    }
+}
+
+function toggleClearMenu(event) {
+    event.stopPropagation();
+    const menu = document.getElementById('clearMenu');
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+
+// Close clear menu when clicking outside
+document.addEventListener('click', function(e) {
+    const clearMenu = document.getElementById('clearMenu');
+    const clearMenuBtn = document.getElementById('clearMenuBtn');
+    if (clearMenu && !clearMenu.contains(e.target) && e.target !== clearMenuBtn) {
+        clearMenu.style.display = 'none';
+    }
+});
+
+// Also close clear menu when notification dropdown closes
+document.getElementById('notificationDropdown')?.addEventListener('transitionend', function() {
+    if (this.classList.contains('hidden')) {
+        const clearMenu = document.getElementById('clearMenu');
+        if (clearMenu) clearMenu.style.display = 'none';
+    }
+});
 
 // Initialize when page loads
 if (document.readyState === 'loading') {

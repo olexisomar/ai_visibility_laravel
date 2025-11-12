@@ -89,10 +89,11 @@ class AutomationController extends Controller
 
         // Create run record
         $run = AutomationRun::create([
+            'account_id' => session('account_id'), // ← ADD THIS
             'trigger_type' => 'manual',
             'source' => $request->source,
             'status' => 'pending',
-            'triggered_by' => $request->user()->email ?? 'admin', // TODO: Get actual user
+            'triggered_by' => $request->user()->email ?? 'admin',
         ]);
 
         // Dispatch job

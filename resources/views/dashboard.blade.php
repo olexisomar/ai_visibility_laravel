@@ -1,23 +1,231 @@
 <!doctype html>
+@auth
+    <!-- User is logged in -->
+@else
+    <script>
+        // Redirect to login if not authenticated
+        window.location.href = '/login';
+    </script>
+@endauth
 <html lang="en">
-
 <head>
   <meta charset="utf-8">
   <title>AI Visibility (PHP + JS) — Admin</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 
 <body>
-  <h1>AI Visibility Tracker</h1>
-  <div class="tabs">
-    <button type="button" class="btn pill-info" id="tabDashboard">Dashboard</button>
-    <button type="button" class="btn pill-ok alt" id="tabPrompts">Prompts</button>
-    <button type="button" class="btn pill-or alt" id="tabBrands">Brands</button>
-    <button type="button" class="btn pill-ok alt" id="tabPerformance">Performance</button>
-    <button type="button" class="btn pill-info alt" id="tabConfig">Config</button>
-    <button type="button" class="btn pill-info alt" id="tabAutomation" >⚙️ Automation</button>
+  <!-- Header with Account Switcher & User Menu -->
+  <div style="background: white; border-bottom: 2px solid #e5e7eb; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+    <!-- Left: Logo & Account Switcher -->
+    <div style="display: flex; align-items: center; gap: 20px;">
+      <h1 style="font-size: 22px; font-weight: 700; color: #374151; margin: 0;">
+        🔍 AI Visibility Tracker
+      </h1>
+      
+      <!-- Account Switcher -->
+      <div style="position: relative;">
+        <button id="accountSwitcher" style="
+          padding: 8px 16px;
+          background: #f3f4f6;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          font-weight: 500;
+          color: #374151;
+          transition: all 0.2s;
+        " onmouseover="this.style.background='#e5e7eb'" onmouseout="this.style.background='#f3f4f6'">
+          <span>📊 {{ session('account_name') }}</span>
+          <span style="font-size: 10px;">▼</span>
+        </button>
+        
+        <!-- Account Dropdown -->
+        <div id="accountDropdown" style="
+          display: none;
+          position: absolute;
+          top: 100%;
+          left: 0;
+          margin-top: 8px;
+          background: white;
+          border: 1px solid #e5e7eb;
+          border-radius: 8px;
+          box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+          min-width: 220px;
+          z-index: 1000;
+        ">
+          @php
+              $user = auth()->user();
+              $accounts = $user->is_super_admin 
+                  ? \App\Models\Account::where('is_active', true)->get()
+                  : $user->accounts()->where('is_active', true)->get();
+          @endphp
+          
+          <div style="padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; font-weight: 600; text-transform: uppercase;">
+            Switch Account
+          </div>
+          
+          @foreach($accounts as $account)
+              <a href="#" 
+                 class="account-option" 
+                 data-account-id="{{ $account->id }}"
+                 style="
+                     display: flex;
+                     align-items: center;
+                     gap: 10px;
+                     padding: 12px 16px;
+                     color: #374151;
+                     text-decoration: none;
+                     border-bottom: 1px solid #f3f4f6;
+                     transition: background 0.2s;
+                     {{ session('account_id') == $account->id ? 'background: #eff6ff; font-weight: 600;' : '' }}
+                 "
+                 onmouseover="this.style.background='#f9fafb'"
+                 onmouseout="this.style.background='{{ session('account_id') == $account->id ? '#eff6ff' : 'white' }}'"
+              >
+                  <span style="font-size: 18px;">{{ session('account_id') == $account->id ? '✓' : '📊' }}</span>
+                  <div>
+                      <div style="font-size: 14px;">{{ $account->name }}</div>
+                      <div style="font-size: 11px; color: #9ca3af;">{{ $account->domain }}</div>
+                  </div>
+              </a>
+          @endforeach
+        </div>
+      </div>
+      <!-- Role Badge -->
+        <div style="margin-left: 16px; padding: 6px 12px; background: 
+            @if(auth()->user()->is_super_admin)
+                #fef3c7
+            @elseif(auth()->user()->isAdminFor(session('account_id')))
+                #dbeafe
+            @else
+                #f3f4f6
+            @endif
+            ; border-radius: 6px;">
+            <span style="font-size: 12px; font-weight: 600; color: 
+                @if(auth()->user()->is_super_admin)
+                    #92400e
+                @elseif(auth()->user()->isAdminFor(session('account_id')))
+                    #1e40af
+                @else
+                    #374151
+                @endif
+                ;">
+                @if(auth()->user()->is_super_admin)
+                    ⭐ Super Admin
+                @elseif(auth()->user()->isAdminFor(session('account_id')))
+                    🔧 Admin
+                @else
+                    👁️ Viewer
+                @endif
+            </span>
+        </div>
+    </div>
+    
+    <!-- Right: User Menu -->
+    <div style="display: flex; align-items: center; gap: 12px;margin-right: 35px;">
+      <!-- User Menu Button -->
+      <div style="position: relative;">
+        <button id="userMenu" style="
+          padding: 8px 16px;
+          background: white;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          font-weight: 500;
+          color: #374151;
+          transition: all 0.2s;
+        " onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='white'">
+          <span>👤</span>
+          <span>{{ auth()->user()->name }}</span>
+          <span style="font-size: 10px;">▼</span>
+        </button>
+        
+        <!-- User Dropdown -->
+        <div id="userDropdown" style="
+          display: none;
+          position: absolute;
+          top: 100%;
+          right: 0;
+          margin-top: 8px;
+          background: white;
+          border: 1px solid #e5e7eb;
+          border-radius: 8px;
+          box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+          min-width: 240px;
+          z-index: 1000;
+        ">
+          <!-- User Info -->
+          <div style="padding: 16px; border-bottom: 1px solid #f3f4f6; background: #f9fafb;">
+            <div style="font-size: 15px; font-weight: 600; color: #374151; margin-bottom: 4px;">
+              {{ auth()->user()->name }}
+            </div>
+            <div style="font-size: 12px; color: #6b7280; margin-bottom: 6px;">
+              {{ auth()->user()->email }}
+            </div>
+            <div style="display: inline-block; padding: 2px 8px; background: #dbeafe; color: #1e40af; border-radius: 4px; font-size: 11px; font-weight: 600;">
+              {{ ucfirst(session('user_role')) }}
+            </div>
+          </div>
+          
+          @if(!auth()->user()->isViewerFor(session('account_id')))
+              <a href="{{ route('admin.accounts') }}" style="
+                  display: flex;
+                  align-items: center;
+                  gap: 10px;
+                  padding: 12px 16px;
+                  color: #374151;
+                  text-decoration: none;
+                  font-size: 14px;
+                  border-bottom: 1px solid #f3f4f6;
+                  transition: background 0.2s;
+              " onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='white'">
+                  <span>⚙️</span>
+                  <span>Manage Accounts</span>
+              </a>
+              <a href="{{ route('admin.users') }}" style="display: flex;
+                      align-items: center;
+                      gap: 10px;
+                      padding: 12px 16px;
+                      color: #374151;
+                      text-decoration: none;
+                      font-size: 14px;
+                      border-bottom: 1px solid #f3f4f6;
+                      transition: background 0.2s;
+                  " onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='white'">
+                  <span>👤</span>
+                  <span>Manage Users</span>
+              </a>
+          @endif
+          <!-- Logout -->
+          <a href="#" onclick="event.preventDefault(); document.getElementById('logout-form').submit();" style="
+              display: flex;
+              align-items: center;
+              gap: 10px;
+              padding: 12px 16px;
+              color: #ef4444;
+              text-decoration: none;
+              font-size: 14px;
+              font-weight: 500;
+              transition: background 0.2s;
+          " onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='white'">
+              <span>🚪</span>
+              <span>Logout</span>
+          </a>
+        </div>
+      </div>
+    </div>
     <!-- Notification Bell -->
-    <div style="position: fixed; top: 20px; right: 20px; z-index: 1000;">
+     @if(!auth()->user()->isViewerFor(session('account_id')))
+    <div style="position: fixed; right: 20px; z-index: 1000;">
       <button id="notificationBell" class="btn pill-info" style="position: relative; padding: 10px 16px;">
         🔔
         <span id="notificationBadge" class="hidden" style="
@@ -37,11 +245,31 @@
         ">0</span>
       </button>
     </div>
+    @endif
+  </div>
 
+  <!-- Hidden logout form -->
+  <form id="logout-form" action="{{ route('logout') }}" method="POST" style="display: none;">
+      @csrf
+  </form>
+
+  <!-- Navigation Tabs -->
+  <div class="tabs">
+    
+    <button type="button" class="btn pill-info" id="tabDashboard">Dashboard</button>
+    @if(!auth()->user()->isViewerFor(session('account_id')))
+    <button type="button" class="btn pill-ok alt" id="tabPrompts">Prompts</button>
+    <button type="button" class="btn pill-or alt" id="tabBrands">Brands</button>
+    @endif
+    <button type="button" class="btn pill-ok alt" id="tabPerformance">Performance</button>
+    @if(!auth()->user()->isViewerFor(session('account_id')))
+    <button type="button" class="btn pill-info alt" id="tabConfig">Config</button>
+    <button type="button" class="btn pill-info alt" id="tabAutomation" >⚙️ Automation</button>    
+    @endif
     <!-- Notification Dropdown -->
     <div id="notificationDropdown" class="hidden" style="
       position: fixed;
-      top: 70px;
+      top: 80px;
       right: 20px;
       width: 400px;
       max-height: 500px;
@@ -52,11 +280,63 @@
       z-index: 999;
       overflow: hidden;
     ">
-      <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+      <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; background: #f9fafb;">
         <h3 style="margin: 0; font-size: 16px;">Notifications</h3>
-        <button id="markAllRead" class="btn alt" style="font-size: 12px; padding: 4px 12px;">
-          Mark all read
-        </button>
+        
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button id="markAllRead" class="btn alt" style="font-size: 12px; padding: 4px 12px;">
+            Mark all read
+          </button>
+          
+          <!-- Clear dropdown button -->
+          <div style="position: relative;">
+            <button id="clearMenuBtn" class="btn alt" style="font-size: 12px; padding: 4px 12px; display: flex; align-items: center; gap: 4px;" onclick="toggleClearMenu(event)">
+              Clear ▼
+            </button>
+            
+            <!-- Clear dropdown menu -->
+            <div id="clearMenu" style="
+              display: none;
+              position: absolute;
+              right: 0;
+              top: 100%;
+              margin-top: 4px;
+              background: white;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+              min-width: 150px;
+              z-index: 1000;
+            ">
+              <button onclick="clearAllNotifications(); toggleClearMenu(event);" style="
+                width: 100%;
+                padding: 8px 12px;
+                border: none;
+                background: none;
+                text-align: left;
+                font-size: 13px;
+                cursor: pointer;
+                color: #374151;
+                transition: background 0.2s;
+              " onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='white'">
+                Clear All
+              </button>
+              <button onclick="clearReadNotifications(); toggleClearMenu(event);" style="
+                width: 100%;
+                padding: 8px 12px;
+                border: none;
+                background: none;
+                text-align: left;
+                font-size: 13px;
+                cursor: pointer;
+                color: #374151;
+                transition: background 0.2s;
+              " onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='white'">
+                Clear Read Only
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       
       <div id="notificationList" style="max-height: 400px; overflow-y: auto;">
@@ -69,29 +349,34 @@
   </div>
 
   <!-- DASHBOARD -->
+   
   <section id="viewDashboard" style="background-color: #f2f5f5;padding: 25px;">
+   
     <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px;">
-      <label>Model:</label>
-      <select id="runModel" style="padding: 6px 12px; border-radius: 4px; border: 1px solid #d1d5db;">
-        <option value="">Default</option>
-        <option value="gpt-4o-mini">gpt-4o-mini</option>
-        <option value="gpt-4o">gpt-4o</option>
-        <option value="gpt-4-turbo">gpt-4-turbo</option>
-      </select>
-      
-      <label style="margin-left: 16px;">Temperature:</label>
-      <input id="runTemp" type="number" step="0.1" min="0" max="2" value="0.2" 
-            style="width: 80px; padding: 6px 12px; border-radius: 4px; border: 1px solid #d1d5db;">
-      
+      @if(auth()->user()->canRunQueries(session('account_id')))
+          <label>Model:</label>
+          <select id="runModel" style="padding: 6px 12px; border-radius: 4px; border: 1px solid #d1d5db;">
+            <option value="">Default</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-4-turbo">gpt-4-turbo</option>
+          </select>
+          
+          <label style="margin-left: 16px;">Temperature:</label>
+          
+          <input id="runTemp" type="number" step="0.1" min="0" max="2" value="0.2" 
+                style="width: 80px; padding: 6px 12px; border-radius: 4px; border: 1px solid #d1d5db;">
       <button id="runBtn" onclick="runSampler()" class="btn">Run GPT</button>
       <button type="button" class="btn" id="runGaiBtn" style="margin-left:8px">Run Google AIO</button>
       <span id="runStatus" style="margin-left: 8px;"></span>
+      @endif
     </div>
-        
-    <!-- Optional -->
-    <input id="aioHl" placeholder="hl (e.g., en)">
-    <input id="aioGl" placeholder="gl (e.g., us)">
-    <input id="aioLocation" placeholder="location (e.g., Miami, Florida)">
+    @if(auth()->user()->canRunQueries(session('account_id')))
+      <!-- Optional -->
+      <input id="aioHl" placeholder="hl (e.g., en)" >
+      <input id="aioGl" placeholder="gl (e.g., us)" >
+      <input id="aioLocation" placeholder="location (e.g., Miami, Florida)">
+    @endif
     <span id="runStatus" class="mono"></span>
     <div class="mbop">
       <div id="kpis" class="row" style="margin-top:16px"></div>
@@ -112,6 +397,11 @@
           </thead>
           <tbody id="missedTable"></tbody>
         </table>
+        <div id="missedPager" style="display:flex;gap:8px;align-items:center;margin:8px 0">
+      <button class="btn pill-info" type="button" id="missedPgPrev" disabled="">Prev</button>
+      <span id="missedPgInfo"></span>
+      <button class="btn pill-info" type="button" id="missedPgNext">Next</button>
+    </div>
       </div>
     </div>
     <div id="intChipCont" class="intent-chips-container"></div>
@@ -253,7 +543,7 @@
           <th>Anchor</th> <!-- NEW -->
           <th>Found URL</th>
           <th>Found In</th> <!-- NEW -->
-          <th></th>
+          <th>View Response</th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -308,7 +598,7 @@
           <button type="button" id="promptsExportBtn" class="btn pill-or">Export CSV</button>
       </div>
       <div id="promptsBulkBar" class="hidden" style="display:flex;gap:8px;align-items:center;margin:8px 0;">
-        <label for="promptsBulkBar"><b>Bulk Actions:</b></label>
+        <span><b>Bulk Actions:</b></span>
         <button class="btn pill-or"  id="pbPause">Pause</button>
         <button class="btn pill-ok"  id="pbResume">Resume</button>
         <button class="btn pill-miss" id="pbDelete">Delete</button>
@@ -848,6 +1138,7 @@
               <th>Active</th>
               <th>Last Gen</th>
               <th>Actions</th>
+              <th>Description</td>
             </tr>
           </thead>
           <tbody></tbody>
@@ -1143,7 +1434,7 @@
   <div id="respModal" class="modal hidden">
     <div class="modal__dialog">
       <div class="modal__head">
-        <div class="modal__title">Response</div>
+        <div id="modalTitle" class="modal__title"></div>
         <button id="respModalClose" class="btn alt" type="button">&times;</button>
       </div>
       <div id="respModalBody" class="modal__body"></div>
@@ -1157,6 +1448,10 @@
   <script src="{{ asset('assets/js/automation.js') }}"></script>
   <script src="{{ asset('assets/js/mentions.js') }}"></script>
   <script src="{{ asset('assets/js/notifications.js') }}"></script> 
+  <script src="{{ asset('assets/js/siteHeader.js') }}"></script>
+
+</body>
+</html>
 </body>
 
 </html>
