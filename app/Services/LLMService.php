@@ -21,22 +21,22 @@ class LLMService
      */
     public function getProviders(): array
     {
-        $openaiKey = env('OPENAI_API_KEY');
-        $geminiKey = env('GEMINI_API_KEY');
+        $openaiKey = config('services.openai.key');
+        $geminiKey = config('services.gemini.key');
 
         $providers = [];
 
         if ($openaiKey) {
             $providers[] = [
                 'provider' => 'openai',
-                'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+                'model' => config('services.openai.model'),
             ];
         }
 
         if ($geminiKey && !$this->isGeminiBlocked()) {
             $providers[] = [
                 'provider' => 'gemini',
-                'model' => env('GEMINI_MODEL', 'gemini-2.0-flash'),
+                'model' => config('services.gemini.model'),
             ];
         }
 
@@ -113,7 +113,7 @@ class LLMService
      */
     private function callOpenAI(string $model, string $system, string $user): array
     {
-        $key = env('OPENAI_API_KEY');
+        $key = config('services.openai.key');
         
         $ch = curl_init('https://api.openai.com/v1/chat/completions');
         curl_setopt_array($ch, [
@@ -161,7 +161,7 @@ class LLMService
      */
     private function callGemini(string $model, string $system, string $user): array
     {
-        $key = env('GEMINI_API_KEY');
+        $key = config('services.gemini.key');
         if (!$key) {
             throw new RuntimeException('GEMINI_API_KEY missing');
         }

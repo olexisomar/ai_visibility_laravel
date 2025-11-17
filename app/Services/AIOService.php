@@ -14,10 +14,10 @@ class AIOService
 
     public function __construct()
     {
-        $this->concurrency = max(1, (int)env('AIO_CONCURRENCY', 3)); // Lower for SerpAPI
-        $this->pageSize = max(1, (int)env('AIO_PAGE_SIZE', 50));
-        $this->rateGapMs = max(0, (int)env('AIO_RATE_LIMIT_MS', 1000));
-        $this->httpTimeout = max(5, (int)env('SERP_HTTP_TIMEOUT', 60));
+        $this->concurrency = max(1, (int)config('services.aio.concurrency')); // Lower for SerpAPI
+        $this->pageSize = max(1, (int)config('services.aio.page_size'));
+        $this->rateGapMs = max(0, (int)config('services.aio.rate_limit_ms'));
+        $this->httpTimeout = max(5, (int)config('services.serpapi.timeout'));
     }
 
     /**
@@ -30,7 +30,7 @@ class AIOService
         int $offset = 0,
         ?int $accountId = null
     ): array {
-        $serpApiKey = env('SERPAPI_KEY');
+        $serpApiKey = config('services.serpapi.key');
         if (!$serpApiKey) {
             throw new \RuntimeException('SERPAPI_KEY missing');
         }
@@ -111,7 +111,8 @@ class AIOService
                         $brands,
                         $aliasesBy,
                         $hasSentiment,
-                        $hasSourceCol
+                        $hasSourceCol,
+                        $accountId
                     );
 
                     $usedIds[] = $row->id;
@@ -464,13 +465,15 @@ class AIOService
         array $brands,
         array $aliasesBy,
         bool $hasSentiment,
-        bool $hasSourceCol
+        bool $hasSourceCol,
+        ?int $accountId = null
     ): string {
         $text = $result['text'];
         $intent = $this->classifyIntent($text);
 
         // Insert response
         $responseId = DB::table('responses')->insertGetId([
+            'account_id' => $accountId,
             'run_id' => $runId,
             'prompt_id' => $row->id,
             'raw_answer' => $text,
@@ -480,6 +483,7 @@ class AIOService
             'prompt_text' => $row->prompt,
             'prompt_category' => $row->category ?? null,
             'intent' => $intent,
+            'created_at' => now(),
         ]);
 
         // ✅ NEW: Extract text-only version (no URLs)
@@ -493,6 +497,7 @@ class AIOService
                 
                 if (preg_match($pattern, $textOnly)) {
                     $mentionData = [
+                        'account_id' => $accountId,
                         'response_id' => $responseId,
                         'brand_id' => $brand->id,
                         'found_alias' => $alias,
@@ -512,6 +517,7 @@ class AIOService
         // Save links from AIO
         foreach ($result['links'] as $link) {
             $linkData = [
+                'account_id' => $accountId,
                 'response_id' => $responseId,
                 'url' => $link['url'],
                 'anchor' => $link['anchor'] ?? null,
@@ -528,6 +534,7 @@ class AIOService
         $plainLinks = $this->extractLinksFromText($text);
         foreach ($plainLinks as $link) {
             $linkData = [
+                'account_id' => $accountId,
                 'response_id' => $responseId,
                 'url' => $link['url'],
                 'anchor' => $link['anchor'] ?? null,
@@ -588,12 +595,12 @@ class AIOService
                 return 'neutral';
             }
             
-            $apiKey = env('OPENAI_API_KEY');
+            $apiKey = config('services.openai.key');
             if (!$apiKey) {
                 return $this->detectSentimentKeyword($cleanText);
             }
             
-            $model = env('OPENAI_MODEL', 'gpt-4o-mini');
+            $model = config('services.openai.model');
             
             $payload = [
                 'model' => $model,

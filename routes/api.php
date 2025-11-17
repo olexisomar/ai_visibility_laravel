@@ -17,6 +17,13 @@ use App\Http\Controllers\Api\AutomationController;
 | API Routes
 |--------------------------------------------------------------------------
 */
+// ==================== PUBLIC API ROUTES (API Key Auth) ====================
+// These routes authenticate via API key in the request (no session needed)
+Route::prefix('mentions')->group(function () {
+    Route::get('/export', [MentionController::class, 'export']);
+    Route::get('/export-sheets', [MentionController::class, 'exportToSheets']);
+    Route::get('/export-windsor', [MentionController::class, 'exportForWindsor']);
+});
 
 Route::middleware(['web', 'auth', 'account.scope'])->prefix('admin')->group(function () {
     
@@ -47,9 +54,6 @@ Route::middleware(['web', 'auth', 'account.scope'])->prefix('admin')->group(func
     // ==================== MENTIONS ====================
     Route::prefix('mentions')->name('admin.mentions.')->group(function () {
         // Mentions export
-        Route::get('/export', [MentionController::class, 'export']);
-        Route::get('/export-sheets', [MentionController::class, 'exportToSheets']);
-        Route::get('/export-windsor', [MentionController::class, 'exportForWindsor'])->name('exportWindsor');
         Route::get('/', [MentionController::class, 'index'])->name('index');
         Route::get('/{id}', [MentionController::class, 'show'])->name('show');
     });
@@ -181,5 +185,10 @@ Route::middleware(['web', 'auth', 'account.scope'])->prefix('admin')->group(func
     // Budget endpoints
     Route::get('/automation/budget', [AutomationController::class, 'getBudgetStats']);
     Route::post('/automation/budget', [AutomationController::class, 'updateBudget']);
+
+    // Protected API routes that require API key
+    Route::middleware('auth.api-key')->group(function () {
+        Route::get('/admin/mentions/export-sheets', [MentionController::class, 'exportToSheets']);
+});
 
 });

@@ -14,13 +14,13 @@ class SerpAPIService
      */
     public function getPeopleAlsoAsk(string $query, string $hl = 'en', string $gl = 'us'): array
     {
-        $apiKey = env('SERPAPI_KEY');
+        $apiKey = config('services.serpapi.key');
         if (!$apiKey) {
             return [];
         }
 
         // Budget check
-        $budget = (int)(env('SERPAPI_PAA_BUDGET', 10));
+        $budget = (int)(config('services.serpapi.paa_budget'));
         if (self::$callCount >= $budget) {
             return [];
         }

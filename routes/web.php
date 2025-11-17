@@ -46,3 +46,4 @@ Route::middleware(['auth'])->prefix('admin')->group(function () {
     Route::post('/api/users/assign', [App\Http\Controllers\Admin\UserController::class, 'assignToAccount'])->name('api.users.assign');
     Route::post('/api/users/remove', [App\Http\Controllers\Admin\UserController::class, 'removeFromAccount'])->name('api.users.remove');
 });
+

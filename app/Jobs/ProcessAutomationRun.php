@@ -144,10 +144,11 @@ class ProcessAutomationRun implements ShouldQueue
             ]);
 
             $monitoring = app(MonitoringService::class);
-            $model = env('OPENAI_MODEL', 'gpt-4o-mini');
-            $temp = (float) env('TEMPERATURE', 0.2);
+            $model = config('services.openai.model');
+            $temp = (float) config('services.openai.temperature');
 
             // Call monitoring service
+            Log::info('Running GPT with account_id', ['account_id' => $this->run->account_id]);
             $result = $monitoring->runMonitoring($model, $temp, 0, $this->run->account_id);
             
             $processed = $result['processed'] ?? 0;
@@ -202,11 +203,12 @@ class ProcessAutomationRun implements ShouldQueue
             ]);
 
             $aioService = app(AIOService::class);
-            $hl = env('SERPAPI_HL', 'en');
-            $gl = env('SERPAPI_GL', 'us');
-            $location = env('SERPAPI_LOCATION', 'United States');
+            $hl = config('services.serpapi.hl');
+            $gl = config('services.serpapi.gl');
+            $location = config('services.serpapi.location');
 
             // Call AIO service
+            Log::info('Running GPT with account_id', ['account_id' => $this->run->account_id]);
             $result = $aioService->runAIOMonitoring($hl, $gl, $location, 0, $this->run->account_id);
             
             $processed = $result['processed'] ?? 0;

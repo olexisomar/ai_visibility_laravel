@@ -14,16 +14,27 @@ let notificationsOpen = false;
 async function loadNotifications() {
     try {
         const res = await fetch(`${API_BASE}/notifications`, {
-            headers: { 'X-API-Key': API_KEY }
+            headers: { 
+                'X-API-Key': API_KEY,
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            }
         });
+        
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
         
         const data = await res.json();
         
-        // Update badge
+        // ALWAYS update badge
         updateNotificationBadge(data.unread_count || 0);
         
-        // Render notifications
-        renderNotifications(data.notifications || []);
+        // ALWAYS render notifications when dropdown is open
+        if (notificationsOpen) {
+            renderNotifications(data.notifications || []);
+        }
+        
+        console.log(`✅ Notifications loaded: ${data.unread_count} unread`);
         
     } catch (e) {
         console.error('Failed to load notifications:', e);
@@ -37,7 +48,7 @@ function updateNotificationBadge(count) {
     const badge = document.getElementById('notificationBadge');
     if (!badge) return;
     
-    if (count > 0) {
+    if (count >= 0) {
         badge.textContent = count > 99 ? '99+' : count;
         badge.classList.remove('hidden');
     } else {
@@ -171,10 +182,13 @@ async function markNotificationRead(id) {
     try {
         await fetch(`${API_BASE}/notifications/${id}/read`, {
             method: 'POST',
-            headers: { 'X-API-Key': API_KEY }
+            headers: { 
+                'X-API-Key': API_KEY,
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            }
         });
         
-        // Reload notifications
+        // Reload notifications to update count
         await loadNotifications();
         
     } catch (e) {
@@ -187,13 +201,25 @@ async function markNotificationRead(id) {
  */
 async function markAllNotificationsRead() {
     try {
-        await fetch(`${API_BASE}/notifications/read-all`, {
+        const res = await fetch(`${API_BASE}/notifications/read-all`, {
             method: 'POST',
-            headers: { 'X-API-Key': API_KEY }
+            headers: { 
+                'X-API-Key': API_KEY,
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            }
         });
         
-        // Reload notifications
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+        
+        // FORCE badge to 0 immediately
+        updateNotificationBadge(0);
+        
+        // Reload notifications to confirm
         await loadNotifications();
+        
+        console.log('✅ Marked all as read');
         
     } catch (e) {
         console.error('Failed to mark all as read:', e);
@@ -250,8 +276,28 @@ function initNotifications() {
     loadNotifications();
     
     // Poll for new notifications every 5 minutes
-    setInterval(loadNotifications, 300000);
+    setInterval(loadNotifications, 60000);
 }
+
+/**
+ * Refresh notifications
+ */
+async function refreshNotifications() {
+    console.log('🔔 Auto-refreshing notifications...');
+    
+    // Call the global refresh function if it exists
+    if (typeof window.refreshNotifications === 'function') {
+        window.refreshNotifications();
+    } else if (typeof loadNotifications === 'function') {
+        await loadNotifications();
+    }
+}
+/**
+ * Manually refresh notifications (can be called from other scripts)
+ */
+window.refreshNotifications = function() {
+    loadNotifications();
+};
 
 // Delete individual notification
 async function deleteNotification(notificationId) {
@@ -287,9 +333,10 @@ async function clearAllNotifications() {
     }
     
     try {
-        const response = await fetch('/ai-visibility-company/public/api/admin/notifications/clear-all', {
+        const response = await fetch(`${API_BASE}/notifications/clear-all`, {
             method: 'POST',
             headers: {
+                'X-API-Key': API_KEY,
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
             }
         });
@@ -297,7 +344,11 @@ async function clearAllNotifications() {
         const data = await response.json();
         
         if (data.success) {
-            loadNotifications();
+            // Update badge immediately
+            updateNotificationBadge(0);
+            
+            // Reload notifications
+            await loadNotifications();
         }
     } catch (error) {
         console.error('Failed to clear notifications:', error);
@@ -311,9 +362,10 @@ async function clearReadNotifications() {
     }
     
     try {
-        const response = await fetch('/ai-visibility-company/public/api/admin/notifications/clear-read', {
+        const response = await fetch(`${API_BASE}/notifications/clear-read`, {
             method: 'POST',
             headers: {
+                'X-API-Key': API_KEY,
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
             }
         });
@@ -321,7 +373,8 @@ async function clearReadNotifications() {
         const data = await response.json();
         
         if (data.success) {
-            loadNotifications();
+            // Reload to get updated count
+            await loadNotifications();
         }
     } catch (error) {
         console.error('Failed to clear read notifications:', error);

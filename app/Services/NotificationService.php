@@ -112,7 +112,7 @@ class NotificationService
         $prompts = $metrics['prompts_processed'] ?? 0;
         $mentions = $metrics['mentions_found'] ?? 0;
         $brands = $metrics['brands_mentioned'] ?? 0;
-        $dashboardUrl = env('APP_URL', 'http://localhost');
+        $dashboardUrl = config('app.url');
         
         return <<<HTML
 <!DOCTYPE html>

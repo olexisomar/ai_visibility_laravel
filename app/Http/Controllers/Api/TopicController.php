@@ -60,7 +60,7 @@ class TopicController extends Controller
         }
 
         // Set deadline for this request
-        $budget = (int)env('ADMIN_TIME_BUDGET_SEC', 90);
+        $budget = (int)config('services.topics.time_budget_sec');
         if (!defined('SAVE_TOPICS_DEADLINE')) {
             define('SAVE_TOPICS_DEADLINE', microtime(true) + $budget);
         }
@@ -346,8 +346,8 @@ class TopicController extends Controller
         int $startIdx,
         int $limit
     ): array {
-        $hl = env('SERPAPI_HL', 'en');
-        $gl = env('SERPAPI_GL', 'us');
+        $hl = config('services.serpapi.hl');
+        $gl = config('services.serpapi.gl');
         
         // Get GSC weights for scoring
         $primaryProperty = $this->gsc->getPrimaryProperty();
@@ -357,10 +357,10 @@ class TopicController extends Controller
         $providers = $this->llm->getProviders();
 
         // Env configs
-        $maxAITotal = (int)env('MAX_AI_TOTAL', 2);
-        $maxAIPerProvider = (int)env('MAX_AI_PER_PROVIDER', 1);
-        $paaPerSeed = (int)env('PAA_PER_SEED', 1);
-        $minBrandedQueries = (int)env('MIN_BRANDED_Q', 1);
+        $maxAITotal = (int)config('services.topics.max_ai_total');
+        $maxAIPerProvider = (int)config('services.topics.max_ai_per_provider');
+        $paaPerSeed = (int)config('services.topics.paa_per_seed');
+        $minBrandedQueries = (int)config('services.topics.min_branded_queries');
 
         $processed = 0;
         $generated = 0;

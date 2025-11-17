@@ -29,7 +29,7 @@ class AppServiceProvider extends ServiceProvider
         // Force HTTPS when behind ngrok or proxy
         if (request()->header('X-Forwarded-Proto') === 'https' || 
             request()->server('HTTP_X_FORWARDED_PROTO') === 'https' ||
-            env('FORCE_HTTPS', false)) {
+            config('app.force_https', false)) {
             URL::forceScheme('https');
         }
     }

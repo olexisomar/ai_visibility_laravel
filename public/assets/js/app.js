@@ -1388,7 +1388,7 @@ const getBasePath = () => {
 };
 
 const API_BASE = getBasePath();
-const API_KEY  = 'super-long-random-string'; //Change this later
+const API_KEY = window.userApiKey || 'temporary-fallback-key';
 const personasCache = Object.create(null);
 
 // ---- Suggestions Paginations State ----

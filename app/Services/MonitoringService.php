@@ -14,10 +14,10 @@ class MonitoringService
 
     public function __construct()
     {
-        $this->concurrency = max(1, (int)env('RUN_CONCURRENCY', 6));
-        $this->pageSize = max(1, (int)env('RUN_PAGE_SIZE', 200));
-        $this->rateGapMs = max(0, (int)env('RATE_LIMIT_MS', 0));
-        $this->httpTimeout = max(5, (int)env('OPENAI_HTTP_TIMEOUT', 60));
+        $this->concurrency = max(1, (int)config('services.run.concurrency', 6));
+        $this->pageSize = max(1, (int)config('services.run.page_size', 200));
+        $this->rateGapMs = max(0, (int)config('services.run.rate_limit_ms', 0));
+        $this->httpTimeout = max(5, (int)config('services.openai.timeout', 60));
     }
 
     /**
@@ -25,7 +25,7 @@ class MonitoringService
      */
     public function runMonitoring(string $model, float $temp = 0.2, int $offset = 0, ?int $accountId = null): array
     {
-        $apiKey = env('OPENAI_API_KEY');
+        $apiKey = config('services.openai.key');
         if (!$apiKey) {
             throw new \RuntimeException('OPENAI_API_KEY missing');
         }
@@ -104,7 +104,8 @@ class MonitoringService
                         $result,
                         $brands,
                         $aliasesBy,
-                        $hasSentiment
+                        $hasSentiment,
+                        $accountId
                     );
 
                     $usedIds[] = $row->id;
@@ -262,13 +263,15 @@ class MonitoringService
         array $result,
         array $brands,
         array $aliasesBy,
-        bool $hasSentiment
+        bool $hasSentiment,
+        ?int $accountId = null
     ): void {
         $answer = $result['answer'];
         $intent = $this->classifyIntent($answer);
 
         // Insert response
         $responseId = DB::table('responses')->insertGetId([
+            'account_id' => $accountId,
             'run_id' => $runId,
             'prompt_id' => $row->id,
             'raw_answer' => $answer,
@@ -292,6 +295,7 @@ class MonitoringService
                 
                 if (str_contains($normalized, $needle)) {
                     $mentionData = [
+                        'account_id' => $accountId,
                         'response_id' => $responseId,
                         'brand_id' => $brand->id,
                         'found_alias' => $alias,
@@ -314,6 +318,7 @@ class MonitoringService
         $links = $this->extractLinks($answer);
         foreach ($links as $link) {
             DB::table('response_links')->insertOrIgnore([
+                'account_id' => $accountId,
                 'response_id' => $responseId,
                 'url' => $link['url'],
                 'anchor' => $link['anchor'],
@@ -377,12 +382,12 @@ class MonitoringService
                 return 'neutral';
             }
             
-            $apiKey = env('OPENAI_API_KEY');
+            $apiKey = config('services.openai.key');
             if (!$apiKey) {
                 return $this->detectSentimentKeyword($cleanText);
             }
             
-            $model = env('OPENAI_MODEL', 'gpt-4o-mini');
+            $model = config('services.openai.model');
             
             $payload = [
                 'model' => $model,

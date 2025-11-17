@@ -228,18 +228,30 @@ class MentionController extends Controller
     public function exportToSheets(Request $request)
     {
         try {
-            // Accept API key from query param OR header
+            // ✅ NEW: Authenticate via database API key
             $apiKey = $request->get('api_key') ?: $request->header('X-API-Key');
             
-            // Validate API key
-            $expectedKey = env('API_KEY', 'super-long-random-string');
-            if ($apiKey !== $expectedKey) {
-                return response()->json([
-                    'success' => false,
-                    'error' => 'Invalid API key'
-                ], 401);
+            if (!$apiKey) {
+                return response()->json(['error' => 'API key required'], 401);
             }
-
+            
+            // ✅ Find user by API key from database
+            $user = \App\Models\User::where('api_key', $apiKey)->first();
+            
+            if (!$user) {
+                return response()->json(['error' => 'Invalid API key'], 401);
+            }
+            
+            // ✅ Log user in for this request
+            auth()->login($user);
+            
+            // ✅ Set account context
+            if ($user->accounts->isEmpty()) {
+                return response()->json(['error' => 'No account associated with this user'], 403);
+            }
+            
+            session(['account_id' => $user->accounts->first()->id]);
+            
             $accountId = $this->getAccountId();
             
             // Get data using same logic as CSV export
@@ -376,11 +388,29 @@ class MentionController extends Controller
     public function exportForWindsor(Request $request)
     {
         try {
-            // Validate API key
-            $apiKey = $request->get('api_key');
-            if ($apiKey !== env('API_KEY', 'super-long-random-string')) {
-                return response()->json(['error' => 'Unauthorized'], 401);
+            // ✅ NEW: Authenticate via database API key
+            $apiKey = $request->get('api_key') ?: $request->header('X-API-Key');
+            
+            if (!$apiKey) {
+                return response()->json(['error' => 'API key required'], 401);
             }
+            
+            // ✅ Find user by API key from database
+            $user = \App\Models\User::where('api_key', $apiKey)->first();
+            
+            if (!$user) {
+                return response()->json(['error' => 'Invalid API key'], 401);
+            }
+            
+            // ✅ Log user in for this request
+            auth()->login($user);
+            
+            // ✅ Set account context
+            if ($user->accounts->isEmpty()) {
+                return response()->json(['error' => 'No account associated with this user'], 403);
+            }
+            
+            session(['account_id' => $user->accounts->first()->id]);
             
             $accountId = $this->getAccountId();
             $mentions = $this->getMentionsForExport($request);

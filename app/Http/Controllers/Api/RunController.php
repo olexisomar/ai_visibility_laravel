@@ -1,7 +1,5 @@
 <?php
-
 namespace App\Http\Controllers\Api;
-
 use App\Http\Controllers\Controller;
 use App\Services\MonitoringService;
 use Illuminate\Http\Request;
@@ -11,12 +9,12 @@ use Illuminate\Support\Facades\Log;
 class RunController extends Controller
 {
     private MonitoringService $monitoring;
-
+    
     public function __construct(MonitoringService $monitoring)
     {
         $this->monitoring = $monitoring;
     }
-
+    
     /**
      * Get all runs
      */
@@ -81,26 +79,26 @@ class RunController extends Controller
                 'error' => 'Unauthorized - only admins can run queries'
             ], 403);
         }
-
+        
         // Increase limits for long-running process
         set_time_limit(600);
         ini_set('max_execution_time', '600');
         ignore_user_abort(true);
-
+        
         $validated = $request->validate([
             'model' => 'nullable|string',
             'temp' => 'nullable|numeric',
             'offset' => 'nullable|integer',
         ]);
-
+        
         try {
-            $model = $validated['model'] ?? env('OPENAI_MODEL', 'gpt-4o-mini');
-            $temp = $validated['temp'] ?? (float)env('TEMPERATURE', 0.2);
+            $model = $validated['model'] ?? config('services.openai.model');
+            $temp = $validated['temp'] ?? (float)config('services.openai.temperature');
             $offset = $validated['offset'] ?? 0;
-
-            // Run monitoring synchronously
-            $result = $this->monitoring->runMonitoring($model, $temp, $offset);
-
+            
+            // Run monitoring synchronously WITH account_id
+            $result = $this->monitoring->runMonitoring($model, $temp, $offset, $accountId);
+            
             return response()->json($result);
             
         } catch (\Exception $e) {
@@ -141,7 +139,7 @@ class RunController extends Controller
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
-
+    
     /**
      * Start Google AIO monitoring run
      */
@@ -160,24 +158,25 @@ class RunController extends Controller
         set_time_limit(600);
         ini_set('max_execution_time', '600');
         ignore_user_abort(true);
-
+        
         $validated = $request->validate([
             'hl' => 'nullable|string|max:10',
             'gl' => 'nullable|string|max:10',
             'location' => 'nullable|string|max:100',
             'offset' => 'nullable|integer',
         ]);
-
+        
         try {
             $aioService = app(\App\Services\AIOService::class);
             
-            $hl = $validated['hl'] ?? env('SERPAPI_HL', 'en');
-            $gl = $validated['gl'] ?? env('SERPAPI_GL', 'us');
-            $location = $validated['location'] ?? env('SERPAPI_LOCATION', 'United States');
+            $hl = $validated['hl'] ?? config('services.serpapi.hl');
+            $gl = $validated['gl'] ?? config('services.serpapi.gl');
+            $location = $validated['location'] ?? config('services.serpapi.location');
             $offset = $validated['offset'] ?? 0;
-
-            $result = $aioService->runAIOMonitoring($hl, $gl, $location, $offset);
-
+            
+            // Run AIO monitoring WITH account_id
+            $result = $aioService->runAIOMonitoring($hl, $gl, $location, $offset, $accountId);
+            
             return response()->json($result);
             
         } catch (\Exception $e) {
