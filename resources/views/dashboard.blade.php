@@ -69,7 +69,7 @@
           @endphp
           
           <div style="padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; font-weight: 600; text-transform: uppercase;">
-            Switch Account
+            Switch Brand
           </div>
           
           @foreach($accounts as $account)

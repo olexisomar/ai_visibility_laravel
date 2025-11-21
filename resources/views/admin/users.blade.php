@@ -208,7 +208,7 @@
     <!-- Left: Logo & Account Switcher -->
     <div style="display: flex; align-items: center; gap: 20px;">
       <h1 style="font-size: 22px; font-weight: 700; color: #374151; margin: 0;">
-        🔍 AI Visibility Tracker
+        <a href="/" style="text-decoration: none;">🔍 AI Visibility Tracker</a>
       </h1>
       
       <!-- Account Switcher -->
@@ -253,7 +253,7 @@
           @endphp
           
           <div style="padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; font-weight: 600; text-transform: uppercase;">
-            Switch Account
+            Switch Brand
           </div>
           
           @foreach($accounts as $account)

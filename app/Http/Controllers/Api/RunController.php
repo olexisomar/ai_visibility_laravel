@@ -1,26 +1,25 @@
 <?php
+
 namespace App\Http\Controllers\Api;
+
 use App\Http\Controllers\Controller;
-use App\Services\MonitoringService;
+use App\Jobs\ProcessGptRun;
+use App\Jobs\ProcessAioRun;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class RunController extends Controller
 {
-    private MonitoringService $monitoring;
-    
-    public function __construct(MonitoringService $monitoring)
-    {
-        $this->monitoring = $monitoring;
-    }
-    
     /**
      * Get all runs
      */
     public function index(Request $request)
     {
+        $accountId = session('account_id');
+        
         $runs = DB::table('runs')
+            ->where('account_id', $accountId)
             ->orderBy('started_at', 'desc')
             ->limit(50)
             ->get();
@@ -66,7 +65,7 @@ class RunController extends Controller
     }
     
     /**
-     * Start a new monitoring run (synchronous - runs immediately)
+     * Start a new GPT monitoring run (background job)
      */
     public function start(Request $request)
     {
@@ -80,11 +79,6 @@ class RunController extends Controller
             ], 403);
         }
         
-        // Increase limits for long-running process
-        set_time_limit(600);
-        ini_set('max_execution_time', '600');
-        ignore_user_abort(true);
-        
         $validated = $request->validate([
             'model' => 'nullable|string',
             'temp' => 'nullable|numeric',
@@ -92,31 +86,74 @@ class RunController extends Controller
         ]);
         
         try {
-            $model = $validated['model'] ?? config('services.openai.model');
-            $temp = $validated['temp'] ?? (float)config('services.openai.temperature');
+            $model = $validated['model'] ?? config('services.openai.model', 'gpt-4');
+            $temp = $validated['temp'] ?? (float)config('services.openai.temperature', 0.7);
             $offset = $validated['offset'] ?? 0;
             
-            // Run monitoring synchronously WITH account_id
-            $result = $this->monitoring->runMonitoring($model, $temp, $offset, $accountId);
+            // Dispatch background job (service creates run record)
+            ProcessGptRun::dispatch($model, $temp, $offset, $accountId);
             
-            return response()->json($result);
+            return response()->json([
+                'success' => true,
+                'message' => 'GPT run started in background',
+            ]);
             
         } catch (\Exception $e) {
-            Log::error('Monitoring run error: ' . $e->getMessage());
-            Log::error($e->getTraceAsString());
+            Log::error('GPT run dispatch error: ' . $e->getMessage());
             
             return response()->json([
                 'error' => $e->getMessage(),
-                'run_id' => null,
-                'processed' => 0,
-                'errors' => [['error' => $e->getMessage()]],
-                'done' => false,
             ], 500);
         }
     }
     
     /**
-     * Stop a running run (for future async implementation)
+     * Start Google AIO monitoring run (background job)
+     */
+    public function startAIO(Request $request)
+    {
+        $user = auth()->user();
+        $accountId = session('account_id');
+        
+        // Check if user can run queries
+        if (!$user->canRunQueries($accountId)) {
+            return response()->json([
+                'error' => 'Unauthorized - only admins can run queries'
+            ], 403);
+        }
+        
+        $validated = $request->validate([
+            'hl' => 'nullable|string|max:10',
+            'gl' => 'nullable|string|max:10',
+            'location' => 'nullable|string|max:100',
+            'offset' => 'nullable|integer',
+        ]);
+        
+        try {
+            $hl = $validated['hl'] ?? config('services.serpapi.hl', 'en');
+            $gl = $validated['gl'] ?? config('services.serpapi.gl', 'us');
+            $location = $validated['location'] ?? config('services.serpapi.location', 'United States');
+            $offset = $validated['offset'] ?? 0;
+            
+            // Dispatch background job (service creates run record)
+            ProcessAioRun::dispatch($hl, $gl, $location, $offset, $accountId);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'AIO run started in background',
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('AIO run dispatch error: ' . $e->getMessage());
+            
+            return response()->json([
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+    
+    /**
+     * Stop a running run
      */
     public function stop($id)
     {
@@ -137,59 +174,6 @@ class RunController extends Controller
         } catch (\Exception $e) {
             Log::error('Run stop error: ' . $e->getMessage());
             return response()->json(['error' => $e->getMessage()], 500);
-        }
-    }
-    
-    /**
-     * Start Google AIO monitoring run
-     */
-    public function startAIO(Request $request)
-    {
-        $user = auth()->user();
-        $accountId = session('account_id');
-        
-        // Check if user can run queries
-        if (!$user->canRunQueries($accountId)) {
-            return response()->json([
-                'error' => 'Unauthorized - only admins can run queries'
-            ], 403);
-        }
-        
-        set_time_limit(600);
-        ini_set('max_execution_time', '600');
-        ignore_user_abort(true);
-        
-        $validated = $request->validate([
-            'hl' => 'nullable|string|max:10',
-            'gl' => 'nullable|string|max:10',
-            'location' => 'nullable|string|max:100',
-            'offset' => 'nullable|integer',
-        ]);
-        
-        try {
-            $aioService = app(\App\Services\AIOService::class);
-            
-            $hl = $validated['hl'] ?? config('services.serpapi.hl');
-            $gl = $validated['gl'] ?? config('services.serpapi.gl');
-            $location = $validated['location'] ?? config('services.serpapi.location');
-            $offset = $validated['offset'] ?? 0;
-            
-            // Run AIO monitoring WITH account_id
-            $result = $aioService->runAIOMonitoring($hl, $gl, $location, $offset, $accountId);
-            
-            return response()->json($result);
-            
-        } catch (\Exception $e) {
-            Log::error('AIO monitoring error: ' . $e->getMessage());
-            Log::error($e->getTraceAsString());
-            
-            return response()->json([
-                'error' => $e->getMessage(),
-                'run_id' => null,
-                'processed' => 0,
-                'errors' => [['error' => $e->getMessage()]],
-                'done' => false,
-            ], 500);
         }
     }
 }

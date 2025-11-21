@@ -9,68 +9,58 @@ use App\Models\AutomationRun;
 // ==================== WEEKLY AUTOMATION CHECK ====================
 // Check automation settings every hour and run if it's time
 Schedule::call(function () {
-    Log::info('🔍 Automation check started', [
-        'time' => now()->format('Y-m-d H:i:s'),
-        'day' => now()->englishDayOfWeek,
-        'hour' => now()->hour,
-    ]);
+    $settings = AutomationSetting::first();
     
-    $settings = AutomationSetting::get();
+    $now = now();
+    $scheduledTime = \Carbon\Carbon::parse($settings->schedule_time);
+    
+    // Always log current state
+    Log::info('🔍 Automation check', [
+        'now' => $now->format('Y-m-d H:i:s'),
+        'today_day' => $now->dayOfWeek,
+        'target_day' => $settings->schedule_day,
+        'current_hour' => $now->hour,
+        'current_minute' => $now->minute,
+        'target_hour' => $scheduledTime->hour,
+        'target_minute' => $scheduledTime->minute,
+        'is_paused' => $settings->isPaused(),
+    ]);
     
     // Skip if paused
     if ($settings->isPaused()) {
-        Log::info('⏸️  Automation check: Paused');
         return;
     }
     
-    // Check if today is the scheduled day
+    // Check day
     $dayMap = [
         'sunday' => 0, 'monday' => 1, 'tuesday' => 2, 'wednesday' => 3,
         'thursday' => 4, 'friday' => 5, 'saturday' => 6,
     ];
     
     $targetDay = $dayMap[$settings->schedule_day] ?? 1;
-    $today = now()->dayOfWeek;
-    
-    if ($today !== $targetDay) {
-        Log::debug("❌ Automation check: Wrong day", [
-            'today' => now()->englishDayOfWeek,
-            'target' => $settings->schedule_day,
-        ]);
+    if ($now->dayOfWeek !== $targetDay) {
         return;
     }
     
-    // Check if current time matches scheduled time (within 1 hour window)
-    $scheduledTime = \Carbon\Carbon::parse($settings->schedule_time);
-    $now = now();
-    
-    if ($now->hour !== $scheduledTime->hour) {
-        Log::debug("❌ Automation check: Wrong hour", [
-            'current_hour' => $now->hour,
-            'target_hour' => $scheduledTime->hour,
-        ]);
+    // Check time
+    if ($now->hour !== $scheduledTime->hour || $now->minute !== $scheduledTime->minute) {
         return;
     }
     
-    // Check if we already ran today
+    // Check already ran
     $alreadyRanToday = AutomationRun::whereDate('created_at', today())
         ->where('trigger_type', 'scheduled')
         ->exists();
     
     if ($alreadyRanToday) {
-        Log::info('⏭️  Automation check: Already ran today');
+        Log::info('⏭️ Already ran today');
         return;
     }
     
-    // Run automation!
-    Log::info('🚀 Triggering weekly automation!', [
-        'day' => $settings->schedule_day,
-        'time' => $settings->schedule_time,
-    ]);
-    
+    Log::info('🚀 Triggering automation!');
     Artisan::call('automation:run-weekly');
     
-})->hourly()->name('check-automation');
+})->everyMinute()->name('check-automation');
 
 // ==================== STUCK RUN DETECTOR ====================
 // Check for stuck automation runs every 15 minutes

@@ -28,26 +28,39 @@ class UserController extends Controller
     {
         $currentUser = auth()->user();
         
+        \Log::info('=== UserController@list ===', [
+            'current_user_id' => $currentUser->id,
+            'current_user_name' => $currentUser->name,
+            'is_super_admin' => $currentUser->is_super_admin,
+        ]);
+        
         if ($currentUser->is_super_admin) {
             // Super admins see everyone
             $users = User::with('accounts')->orderBy('name')->get();
+            \Log::info('Super admin path - all users', ['count' => $users->count()]);
         } else {
             // Admins see: themselves + viewer users THEY created
             $users = User::with('accounts')
                 ->where(function($query) use ($currentUser) {
-                    $query->where('id', $currentUser->id) // Themselves
-                        ->orWhere('created_by', $currentUser->id); // Users they created
+                    $query->where('id', $currentUser->id)
+                        ->orWhere('created_by', $currentUser->id);
                 })
                 ->orderBy('name')
-                ->get()
-                ->filter(function($user) use ($currentUser) {
+                ->get();
+            
+            \Log::info('Admin path - before filter', [
+                'count' => $users->count(),
+                'user_ids' => $users->pluck('id')->toArray(),
+            ]);
+            
+            $users = $users->filter(function($user) use ($currentUser) {
                     // Include current user
                     if ($user->id === $currentUser->id) {
                         return true;
                     }
                     
                     // Include only viewer users they created
-                    if ($user->created_by === $currentUser->id && 
+                    if ($user->created_by == $currentUser->id && 
                         !$user->is_super_admin && 
                         !$user->isAdminForAnyAccount()) {
                         return true;
@@ -56,6 +69,11 @@ class UserController extends Controller
                     return false;
                 })
                 ->values();
+            
+            \Log::info('Admin path - after filter', [
+                'count' => $users->count(),
+                'user_ids' => $users->pluck('id')->toArray(),
+            ]);
         }
         
         return response()->json([
@@ -65,6 +83,7 @@ class UserController extends Controller
                     'name' => $user->name,
                     'email' => $user->email,
                     'is_super_admin' => $user->is_super_admin,
+                    'created_by' => $user->created_by,
                     'created_at' => $user->created_at,
                     'accounts' => $user->accounts->map(function($account) {
                         return [
@@ -107,17 +126,30 @@ class UserController extends Controller
                 'email' => $validated['email'],
                 'password' => Hash::make($validated['password']),
                 'is_super_admin' => $currentUser->is_super_admin ? ($validated['is_super_admin'] ?? false) : false,
-                'created_by' => $currentUser->id, // Track who created this user
+                'created_by' => $currentUser->id,
             ]);
+            
+            // ✅ ADD THIS: Assign user to current admin's account
+            $accountId = session('account_id');
+            if ($accountId) {
+                DB::table('account_user')->insert([
+                    'user_id' => $user->id,
+                    'account_id' => $accountId,
+                    'role' => 'user', // Default role for new users
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
             
             Log::info('User created', [
                 'user_id' => $user->id,
+                'account_id' => $accountId,
                 'created_by' => $currentUser->id,
             ]);
             
             return response()->json([
                 'success' => true,
-                'user' => $user,
+                'user' => $user->load('accounts'), // Include accounts in response
             ]);
             
         } catch (\Exception $e) {
@@ -142,7 +174,7 @@ class UserController extends Controller
                 // Allow self-edit
             } else {
                 // Admins can only edit viewer users THEY created
-                if ($user->created_by !== $currentUser->id) {
+                if ($user->created_by != $currentUser->id) {
                     return response()->json(['error' => 'You can only edit users you created'], 403);
                 }
                 
@@ -216,7 +248,7 @@ class UserController extends Controller
             
             // Admins can only delete users THEY created
             if (!$currentUser->is_super_admin) {
-                if ($user->created_by !== $currentUser->id) {
+                if ($user->created_by != $currentUser->id) {
                     return response()->json(['error' => 'You can only delete users you created'], 403);
                 }
                 
